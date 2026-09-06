@@ -24,19 +24,23 @@ android {
         versionName = "1.0"
     }
 
-    signingConfigs {
-        create("release") {
-            storeFile = file(keystoreProperties.getProperty("store.file", ""))
-            storePassword = keystoreProperties.getProperty("store.password", "")
-            keyAlias = keystoreProperties.getProperty("key.alias", "")
-            keyPassword = keystoreProperties.getProperty("key.password", "")
+    if (keystoreProperties.getProperty("store.file", "") != "") {
+        signingConfigs {
+            create("release") {
+                storeFile = file(keystoreProperties.getProperty("store.file"))
+                storePassword = keystoreProperties.getProperty("store.password")
+                keyAlias = keystoreProperties.getProperty("key.alias")
+                keyPassword = keystoreProperties.getProperty("key.password")
+            }
         }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("release")
+            if (keystoreProperties.getProperty("store.file", "") != "") {
+                signingConfig = signingConfigs.getByName("release")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
