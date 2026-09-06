@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp"
+    android:background="#FF212121">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Roman Nepali Keyboard"
+        android:textColor="#FFFFFFFF"
+        android:textSize="24sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="24dp" />
+
+    <Button
+        android:id="@+id/btn_enable_keyboard"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Enable Keyboard"
+        android:layout_marginBottom="16dp" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Theme"
+        android:textColor="#FFFFFFFF"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="8dp" />
+
+    <Switch
+        android:id="@+id/switch_dark_mode"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Dark Mode"
+        android:textColor="#FFFFFFFF"
+        android:layout_marginBottom="16dp" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Input"
+        android:textColor="#FFFFFFFF"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="8dp" />
+
+    <Switch
+        android:id="@+id/switch_autocorrect"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Autocorrect"
+        android:textColor="#FFFFFFFF"
+        android:checked="true"
+        android:layout_marginBottom="8dp" />
+
+    <Switch
+        android:id="@+id/switch_suggestions"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Word Suggestions"
+        android:textColor="#FFFFFFFF"
+        android:checked="true"
+        android:layout_marginBottom="8dp" />
+
+    <Switch
+        android:id="@+id/switch_vibration"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Key Vibration"
+        android:textColor="#FFFFFFFF"
+        android:checked="true"
+        android:layout_marginBottom="24dp" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Version 1.0 - Free, Open Source, No Ads"
+        android:textColor="#FFB0B0B0"
+        android:textSize="14sp" />
+
+</LinearLayout>
