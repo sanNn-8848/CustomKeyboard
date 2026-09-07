@@ -21,6 +21,7 @@ class RomanNepaliIME : InputMethodService(), KeyboardView.OnKeyboardActionListen
     private lateinit var suggestionBar: SuggestionBar
     private lateinit var emojiKeyboard: EmojiKeyboard
     private lateinit var container: FrameLayout
+    private lateinit var mainLayout: View
 
     private val suggestionEngine = SuggestionEngine()
     private val themeManager by lazy { ThemeManager(applicationContext) }
@@ -32,6 +33,15 @@ class RomanNepaliIME : InputMethodService(), KeyboardView.OnKeyboardActionListen
     private var isEmojiMode = false
 
     override fun onCreateInputView(): View {
+        return try {
+            buildInputView()
+        } catch (e: Throwable) {
+            android.util.Log.e("MeroTypeIME", "onCreateInputView crashed", e)
+            FrameLayout(this)
+        }
+    }
+
+    private fun buildInputView(): View {
         container = FrameLayout(this)
 
         emojiKeyboard = EmojiKeyboard(this)
@@ -45,6 +55,7 @@ class RomanNepaliIME : InputMethodService(), KeyboardView.OnKeyboardActionListen
         ))
 
         val mainLayout = layoutInflater.inflate(R.layout.keyboard_main, null)
+        this.mainLayout = mainLayout
         suggestionBar = mainLayout.findViewById(R.id.suggestion_bar)
         suggestionBar.onSuggestionClickListener = { suggestion ->
             applySuggestion(suggestion)
@@ -55,14 +66,17 @@ class RomanNepaliIME : InputMethodService(), KeyboardView.OnKeyboardActionListen
         keyboardView.keyboard = keyboard
         keyboardView.setOnKeyboardActionListener(this)
 
+        mainLayout.visibility = View.VISIBLE
         container.addView(mainLayout, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
             FrameLayout.LayoutParams.WRAP_CONTENT
         ))
 
+        emojiKeyboard.visibility = View.GONE
+        mainLayout.visibility = View.VISIBLE
+
         applyNavBarInsetPadding(mainLayout)
         applyTheme()
-        showKeyboard()
 
         return container
     }
@@ -90,13 +104,13 @@ class RomanNepaliIME : InputMethodService(), KeyboardView.OnKeyboardActionListen
     private fun showKeyboard() {
         isEmojiMode = false
         emojiKeyboard.visibility = View.GONE
-        container.getChildAt(1).visibility = View.VISIBLE
+        mainLayout.visibility = View.VISIBLE
     }
 
     private fun showEmoji() {
         isEmojiMode = true
         emojiKeyboard.visibility = View.VISIBLE
-        container.getChildAt(1).visibility = View.GONE
+        mainLayout.visibility = View.GONE
     }
 
     override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
