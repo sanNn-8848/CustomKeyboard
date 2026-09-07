@@ -19,7 +19,7 @@ class RomanNepaliIME : InputMethodService(), KeyboardView.OnKeyboardActionListen
     private lateinit var keyboardView: KeyboardView
     private lateinit var keyboard: Keyboard
     private lateinit var suggestionBar: SuggestionBar
-    private lateinit var emojiKeyboard: EmojiKeyboard
+    private var emojiKeyboard: EmojiKeyboard? = null
     private lateinit var container: FrameLayout
     private lateinit var mainLayout: View
 
@@ -44,16 +44,6 @@ class RomanNepaliIME : InputMethodService(), KeyboardView.OnKeyboardActionListen
     private fun buildInputView(): View {
         container = FrameLayout(this)
 
-        emojiKeyboard = EmojiKeyboard(this)
-        emojiKeyboard.onEmojiClickListener = { emoji ->
-            currentInputConnection?.commitText(emoji, 1)
-            showKeyboard()
-        }
-        container.addView(emojiKeyboard, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            FrameLayout.LayoutParams.MATCH_PARENT
-        ))
-
         val mainLayout = layoutInflater.inflate(R.layout.keyboard_main, null)
         this.mainLayout = mainLayout
         suggestionBar = mainLayout.findViewById(R.id.suggestion_bar)
@@ -72,8 +62,21 @@ class RomanNepaliIME : InputMethodService(), KeyboardView.OnKeyboardActionListen
             FrameLayout.LayoutParams.WRAP_CONTENT
         ))
 
-        emojiKeyboard.visibility = View.GONE
-        mainLayout.visibility = View.VISIBLE
+        try {
+            val emoji = EmojiKeyboard(this)
+            emoji.onEmojiClickListener = { em ->
+                currentInputConnection?.commitText(em, 1)
+                showKeyboard()
+            }
+            emoji.visibility = View.GONE
+            container.addView(emoji, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            ))
+            emojiKeyboard = emoji
+        } catch (e: Throwable) {
+            android.util.Log.e("MeroTypeIME", "Emoji keyboard init failed", e)
+        }
 
         applyNavBarInsetPadding(mainLayout)
         applyTheme()
@@ -103,13 +106,19 @@ class RomanNepaliIME : InputMethodService(), KeyboardView.OnKeyboardActionListen
 
     private fun showKeyboard() {
         isEmojiMode = false
-        emojiKeyboard.visibility = View.GONE
+        val emoji = emojiKeyboard
+        if (emoji != null) {
+            emoji.visibility = View.GONE
+        }
         mainLayout.visibility = View.VISIBLE
     }
 
     private fun showEmoji() {
         isEmojiMode = true
-        emojiKeyboard.visibility = View.VISIBLE
+        val emoji = emojiKeyboard
+        if (emoji != null) {
+            emoji.visibility = View.VISIBLE
+        }
         mainLayout.visibility = View.GONE
     }
 

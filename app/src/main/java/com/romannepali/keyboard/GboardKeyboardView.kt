@@ -23,6 +23,10 @@ class GboardKeyboardView @JvmOverloads constructor(
     private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val pressedPaint = Paint(Paint.ANTI_ALIAS_FLAG)
 
+    init {
+        isPreviewEnabled = false
+    }
+
     // GBoard color palette
     private val normalKeyColor = 0xFF2B2A2F.toInt()
     private val specialKeyColor = 0xFF333238.toInt()
@@ -73,8 +77,13 @@ class GboardKeyboardView @JvmOverloads constructor(
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        super.onMeasure(widthMeasureSpec, heightMeasureSpec)
-        // Ensure keyboard is measured with its content height
+        val kbd = keyboard
+        val width = MeasureSpec.getSize(widthMeasureSpec)
+        if (kbd != null && width > 0) {
+            setMeasuredDimension(width, kbd.height)
+        } else {
+            super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+        }
     }
 
     @SuppressLint("ClickableViewAccessibility")
