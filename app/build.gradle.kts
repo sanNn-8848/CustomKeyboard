@@ -24,13 +24,22 @@ android {
         versionName = "1.1"
     }
 
-    if (keystoreProperties.getProperty("store.file", "") != "") {
+    val storeFileValue = keystoreProperties.getProperty("store.file")
+        ?: System.getenv("MERO_STORE_FILE")
+    val storePasswordValue = keystoreProperties.getProperty("store.password")
+        ?: System.getenv("MERO_STORE_PASSWORD")
+    val keyAliasValue = keystoreProperties.getProperty("key.alias")
+        ?: System.getenv("MERO_KEY_ALIAS")
+    val keyPasswordValue = keystoreProperties.getProperty("key.password")
+        ?: System.getenv("MERO_KEY_PASSWORD")
+
+    if (!storeFileValue.isNullOrBlank()) {
         signingConfigs {
             create("release") {
-                storeFile = file(keystoreProperties.getProperty("store.file"))
-                storePassword = keystoreProperties.getProperty("store.password")
-                keyAlias = keystoreProperties.getProperty("key.alias")
-                keyPassword = keystoreProperties.getProperty("key.password")
+                storeFile = file(storeFileValue)
+                storePassword = storePasswordValue
+                keyAlias = keyAliasValue
+                keyPassword = keyPasswordValue
             }
         }
     }
@@ -38,7 +47,7 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            if (keystoreProperties.getProperty("store.file", "") != "") {
+            if (!storeFileValue.isNullOrBlank()) {
                 signingConfig = signingConfigs.getByName("release")
             }
             proguardFiles(

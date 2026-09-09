@@ -31,25 +31,22 @@ jobs:
       run: chmod +x gradlew
 
 
-    - name: Build Release APK
+    - name: Write signing keystore
+      run: echo "${{ secrets.SIGNING_KEY }}" | base64 -d > app/keystore.release.jks
+
+
+    - name: Build and sign Release APK
       run: ./gradlew assembleRelease
-
-
-    - name: Sign APK
-      uses: r0adkll/sign-android-release@v1
-      id: sign_app
-      with:
-        releaseDirectory: app/build/outputs/apk/release
-        signingKeyBase64: ${{ secrets.SIGNING_KEY }}
-        alias: ${{ secrets.KEY_ALIAS }}
-        keyStorePassword: ${{ secrets.KEY_STORE_PASSWORD }}
-        keyPassword: ${{ secrets.KEY_PASSWORD }}
-        buildToolsVersion: '34.0.0'
+      env:
+        MERO_STORE_FILE: ${{ github.workspace }}/app/keystore.release.jks
+        MERO_STORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
+        MERO_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        MERO_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
 
 
     - name: Rename APK
       run: |
-        mv ${{ steps.sign_app.outputs.signedReleaseFile }} MeroType.apk
+        mv app/build/outputs/apk/release/app-release.apk MeroType.apk
 
 
     - name: Create Release
