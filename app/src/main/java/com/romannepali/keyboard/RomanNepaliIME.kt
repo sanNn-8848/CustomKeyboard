@@ -1,282 +1,204 @@
 package com.romannepali.keyboard
 
+import android.content.res.Configuration
 import android.inputmethodservice.InputMethodService
-import android.inputmethodservice.Keyboard
-import android.inputmethodservice.KeyboardView
+import android.os.Handler
+import android.os.Looper
 import android.view.View
-import android.widget.FrameLayout
-import android.view.inputmethod.EditorInfo
-import com.romannepali.keyboard.emoji.EmojiKeyboard
 import com.romannepali.keyboard.suggestion.SuggestionEngine
-import com.romannepali.keyboard.theme.ThemeManager
-import android.view.ViewGroup
-import android.os.Build
-import android.view.WindowInsets
-import android.view.WindowInsets.Type as InsetsType
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
-class RomanNepaliIME : InputMethodService(), KeyboardView.OnKeyboardActionListener {
+class RomanNepaliIME : InputMethodService() {
 
-    private lateinit var keyboardView: KeyboardView
-    private lateinit var keyboard: Keyboard
-    private lateinit var suggestionBar: SuggestionBar
-    private var emojiKeyboard: EmojiKeyboard? = null
-    private lateinit var container: FrameLayout
-    private lateinit var mainLayout: View
+    private var keyboardView: GboardKeyboardView? = null
+    private var suggestionBar: SuggestionBar? = null
 
-    private val suggestionEngine = SuggestionEngine()
-    private val themeManager by lazy { ThemeManager(applicationContext) }
-
+    private lateinit var suggestionEngine: SuggestionEngine
     private val currentWord = StringBuilder()
 
-    private var isShifted = true
-    private var isSymbols = false
-    private var isEmojiMode = false
+    // Suggestions are computed off the UI thread so typing never stutters.
+    private val suggestionExecutor: ExecutorService =
+        Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
+    @Volatile
+    private var suggestionJob = 0L
 
-    override fun onCreateInputView(): View {
-        return try {
-            buildInputView()
-        } catch (e: Throwable) {
-            android.util.Log.e("MeroTypeIME", "onCreateInputView crashed", e)
-            FrameLayout(this)
+    override fun onCreate() {
+        super.onCreate()
+
+        suggestionEngine = SuggestionEngine(this)
+
+        window?.window?.decorView?.setOnApplyWindowInsetsListener { view, insets ->
+            view.setPadding(
+                0,
+                0,
+                0,
+                insets.systemWindowInsetBottom
+            )
+            insets
         }
+
+        updateFullscreenMode()
     }
 
-    private fun buildInputView(): View {
-        container = FrameLayout(this)
+    override fun onEvaluateFullscreenMode(): Boolean {
+        return false
+    }
 
-        val mainLayout = layoutInflater.inflate(R.layout.keyboard_main, null)
-        this.mainLayout = mainLayout
-        suggestionBar = mainLayout.findViewById(R.id.suggestion_bar)
-        suggestionBar.onSuggestionClickListener = { suggestion ->
+    override fun onCreateInputView(): View {
+        return createKeyboard()
+    }
+
+    private fun createKeyboard(): View {
+        val view = layoutInflater.inflate(
+            R.layout.keyboard_main,
+            null
+        )
+
+        keyboardView = view.findViewById(R.id.keyboard_view)
+        suggestionBar = view.findViewById(R.id.suggestion_bar)
+
+        suggestionBar?.onSuggestionClickListener = { suggestion ->
             applySuggestion(suggestion)
         }
 
-        keyboardView = mainLayout.findViewById(R.id.keyboard_view)
-        keyboard = Keyboard(this, R.xml.keyboard_main)
-        keyboardView.keyboard = keyboard
-        keyboardView.setOnKeyboardActionListener(this)
+        keyboardView?.onKeyPressed = { text ->
+            val ic = currentInputConnection
 
-        mainLayout.visibility = View.VISIBLE
-        container.addView(mainLayout, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT
-        ))
+            if (ic != null) {
+                when (text) {
+                    " " -> {
+                        finishCurrentWord()
+                        ic.commitText(" ", 1)
+                        suggestionBar?.clearSuggestions()
+                    }
 
-        try {
-            val emoji = EmojiKeyboard(this)
-            emoji.onEmojiClickListener = { em ->
-                currentInputConnection?.commitText(em, 1)
-                showKeyboard()
+                    "." -> {
+                        finishCurrentWord()
+                        ic.commitText(".", 1)
+                        suggestionBar?.clearSuggestions()
+                    }
+
+                    "↵" -> {
+                        finishCurrentWord()
+                        ic.commitText("\n", 1)
+                        suggestionBar?.clearSuggestions()
+                    }
+
+                    "⌫" -> {
+                        if (currentWord.isNotEmpty()) {
+                            currentWord.deleteCharAt(currentWord.length - 1)
+                            updateSuggestions()
+                        } else {
+                            suggestionBar?.clearSuggestions()
+                        }
+
+                        ic.deleteSurroundingText(1, 0)
+                    }
+
+                    "⇧" -> {
+                        // Shift is handled inside GboardKeyboardView.
+                    }
+
+                    else -> {
+                        val isShiftedText =
+                            text.length == 1 && text[0].isUpperCase()
+
+                        if (isShiftedText && currentWord.isEmpty()) {
+                            ic.commitText(text, 1)
+                        } else {
+                            ic.commitText(text, 1)
+                            currentWord.append(text)
+                            updateSuggestions()
+                        }
+                    }
+                }
             }
-            emoji.visibility = View.GONE
-            container.addView(emoji, FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
-            ))
-            emojiKeyboard = emoji
-        } catch (e: Throwable) {
-            android.util.Log.e("MeroTypeIME", "Emoji keyboard init failed", e)
         }
 
-        applyNavBarInsetPadding(mainLayout)
-        applyTheme()
-
-        return container
-    }
-
-    private fun applyNavBarInsetPadding(view: View) {
-        val root = view.rootView ?: return
-        root.setOnApplyWindowInsetsListener { _, insets ->
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                val navBarInset = insets.getInsets(InsetsType.navigationBars())
-                view.setPadding(0, 0, 0, navBarInset.bottom)
-            } else {
-                @Suppress("DEPRECATION")
-                val inset = insets.systemWindowInsetBottom
-                view.setPadding(0, 0, 0, inset)
+        // Long-press space opens the system keyboard switcher (like Gboard).
+        keyboardView?.onKeyLongPressed = { text ->
+            if (text == " ") {
+                val imm = getSystemService(INPUT_METHOD_SERVICE)
+                        as android.view.inputmethod.InputMethodManager
+                imm.showInputMethodPicker()
             }
-            insets
         }
-        root.requestApplyInsets()
-    }
 
-    private fun applyTheme() {
-        themeManager.applyTheme(keyboardView)
-    }
-
-    private fun showKeyboard() {
-        isEmojiMode = false
-        val emoji = emojiKeyboard
-        if (emoji != null) {
-            emoji.visibility = View.GONE
-        }
-        mainLayout.visibility = View.VISIBLE
-    }
-
-    private fun showEmoji() {
-        isEmojiMode = true
-        val emoji = emojiKeyboard
-        if (emoji != null) {
-            emoji.visibility = View.VISIBLE
-        }
-        mainLayout.visibility = View.GONE
-    }
-
-    override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
-        super.onStartInput(attribute, restarting)
-        currentWord.clear()
-        if (::suggestionBar.isInitialized) {
-            suggestionBar.clearSuggestions()
-        }
-        isShifted = true
-    }
-
-    override fun onPress(primaryCode: Int) {
-    }
-
-    override fun onRelease(primaryCode: Int) {
+        return view
     }
 
     private fun updateSuggestions() {
-        if (currentWord.isNotEmpty()) {
-            val suggestions = suggestionEngine.getSuggestions(currentWord.toString())
-            suggestionBar.showSuggestions(suggestions)
-        } else {
-            suggestionBar.clearSuggestions()
+        val word = currentWord.toString()
+        if (word.isEmpty()) {
+            mainHandler.post { suggestionBar?.clearSuggestions() }
+            return
+        }
+
+        val job = ++suggestionJob
+        suggestionExecutor.execute {
+            val suggestions = suggestionEngine.getSuggestions(word)
+            mainHandler.post {
+                // Only apply if no newer keystroke superseded this one.
+                if (job == suggestionJob) {
+                    suggestionBar?.showSuggestions(suggestions)
+                }
+            }
         }
     }
 
-    private fun applySuggestion(suggestion: String) {
-        val ic = currentInputConnection ?: return
-        if (currentWord.isNotEmpty()) {
-            ic.deleteSurroundingText(currentWord.length, 0)
-        }
-        ic.commitText(suggestion, 1)
-        suggestionEngine.learnWord(suggestion)
-        suggestionEngine.updateContext(suggestion)
-        currentWord.clear()
-        suggestionBar.clearSuggestions()
-    }
-
-    private fun commitPunctuation(ic: android.view.inputmethod.InputConnection, punctuation: String) {
+    private fun finishCurrentWord() {
         if (currentWord.isNotEmpty()) {
             suggestionEngine.learnWord(currentWord.toString())
             suggestionEngine.updateContext(currentWord.toString())
             currentWord.clear()
         }
-        ic.commitText(punctuation, 1)
-        suggestionBar.clearSuggestions()
     }
 
-    override fun onKey(primaryCode: Int, keyCodes: IntArray?) {
+    private fun applySuggestion(suggestion: String) {
         val ic = currentInputConnection ?: return
-        if (isEmojiMode) {
-            showKeyboard()
-        }
 
-        when (primaryCode) {
-            in 97..122 -> {
-                val char = if (isShifted) {
-                    isShifted = false
-                    keyboardView.isShifted = false
-                    primaryCode.toChar().uppercaseChar()
-                } else {
-                    primaryCode.toChar()
-                }
-                ic.commitText(char.toString(), 1)
-                currentWord.append(char)
-                updateSuggestions()
-            }
-
-            32 -> {
-                if (currentWord.isNotEmpty()) {
-                    suggestionEngine.learnWord(currentWord.toString())
-                    suggestionEngine.updateContext(currentWord.toString())
-                    currentWord.clear()
-                }
-                ic.commitText(" ", 1)
-                suggestionBar.clearSuggestions()
-            }
-
-            -5 -> {
-                if (currentWord.isNotEmpty()) {
-                    currentWord.deleteCharAt(currentWord.length - 1)
-                    updateSuggestions()
-                }
-                ic.deleteSurroundingText(1, 0)
-            }
-
-            -4 -> {
-                val editorInfo = currentInputEditorInfo
-                val action = editorInfo?.imeOptions
-                    ?.and(EditorInfo.IME_MASK_ACTION)
-                    ?: EditorInfo.IME_ACTION_UNSPECIFIED
-
-                when (action) {
-                    EditorInfo.IME_ACTION_SEND -> ic.performEditorAction(EditorInfo.IME_ACTION_SEND)
-                    EditorInfo.IME_ACTION_GO -> ic.performEditorAction(EditorInfo.IME_ACTION_GO)
-                    EditorInfo.IME_ACTION_SEARCH -> ic.performEditorAction(EditorInfo.IME_ACTION_SEARCH)
-                    EditorInfo.IME_ACTION_DONE -> ic.performEditorAction(EditorInfo.IME_ACTION_DONE)
-                    else -> {
-                        if (currentWord.isNotEmpty()) {
-                            suggestionEngine.learnWord(currentWord.toString())
-                            currentWord.clear()
-                        }
-                        ic.commitText("\n", 1)
-                    }
-                }
-                suggestionBar.clearSuggestions()
-            }
-
-            -1 -> {
-                isShifted = !isShifted
-                keyboardView.isShifted = isShifted
-            }
-
-            -2 -> {
-                isSymbols = !isSymbols
-                if (isSymbols) {
-                    keyboard = Keyboard(this, R.xml.keyboard_symbols)
-                } else {
-                    keyboard = Keyboard(this, R.xml.keyboard_main)
-                }
-                keyboardView.keyboard = keyboard
-                applyTheme()
-            }
-
-            -3 -> {
-                showEmoji()
-            }
-
-            46 -> commitPunctuation(ic, ".")
-            44 -> commitPunctuation(ic, ",")
-            else -> {
-                ic.commitText(primaryCode.toChar().toString(), 1)
-            }
-        }
-    }
-
-    override fun onText(text: CharSequence?) {
-        text?.let {
-            currentInputConnection?.commitText(it, 1)
-        }
-    }
-
-    override fun swipeLeft() {
-        val ic = currentInputConnection ?: return
         if (currentWord.isNotEmpty()) {
             ic.deleteSurroundingText(currentWord.length, 0)
-            currentWord.clear()
-            suggestionBar.clearSuggestions()
         }
+
+        ic.commitText(suggestion, 1)
+
+        suggestionEngine.learnWord(suggestion)
+        suggestionEngine.updateContext(suggestion)
+
+        currentWord.clear()
+        suggestionBar?.clearSuggestions()
     }
 
-    override fun swipeRight() {
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+
+        updateFullscreenMode()
+
+        keyboardView?.rebuild()
     }
 
-    override fun swipeDown() {
+    override fun onStartInput(
+        attribute: android.view.inputmethod.EditorInfo?,
+        restarting: Boolean
+    ) {
+        super.onStartInput(attribute, restarting)
+
+        // Invalidate any in-flight suggestion computation.
+        suggestionJob++
+        currentWord.clear()
+        suggestionBar?.clearSuggestions()
     }
 
-    override fun swipeUp() {
+    override fun onDestroy() {
+        suggestionJob++
+        suggestionExecutor.shutdownNow()
+        keyboardView?.onKeyPressed = null
+        keyboardView = null
+        suggestionBar = null
+
+        super.onDestroy()
     }
 }

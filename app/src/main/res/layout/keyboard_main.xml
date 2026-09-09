@@ -5,12 +5,12 @@
     android:layout_height="wrap_content"
     android:orientation="vertical"
     android:background="#FF1C1B1F"
-    android:fitsSystemWindows="false">
+    android:fitsSystemWindows="true">
 
     <!-- Suggestion Toolbar -->
     <FrameLayout
         android:layout_width="match_parent"
-        android:layout_height="44dp"
+        android:layout_height="56dp"
         android:background="#FF1C1B1F">
 
         <com.romannepali.keyboard.SuggestionBar
@@ -24,8 +24,7 @@
     <com.romannepali.keyboard.GboardKeyboardView
         android:id="@+id/keyboard_view"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:keyPreviewLayout="@layout/key_preview"
+        android:layout_height="240dp"
         android:background="#FF1C1B1F" />
 
 </LinearLayout>

@@ -59,4 +59,20 @@ class Trie {
         }
         return if (current.isEndOfWord) current.frequency else 0
     }
+
+    fun getAllWords(): List<Pair<String, Int>> {
+        val result = ArrayList<Pair<String, Int>>()
+
+        fun collect(node: TrieNode) {
+            if (node.isEndOfWord && node.word != null) {
+                result.add(node.word!! to node.frequency)
+            }
+            for (child in node.children.values) {
+                collect(child)
+            }
+        }
+
+        collect(root)
+        return result
+    }
 }
