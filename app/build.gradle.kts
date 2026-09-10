@@ -20,8 +20,8 @@ android {
         applicationId = "com.romannepali.keyboard"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 3
+        versionName = "1.1.1"
     }
 
     val storeFileValue = keystoreProperties.getProperty("store.file")

@@ -13,6 +13,7 @@ class RomanNepaliIME : InputMethodService() {
 
     private var keyboardView: GboardKeyboardView? = null
     private var suggestionBar: SuggestionBar? = null
+    private var mainView: View? = null
 
     private lateinit var suggestionEngine: SuggestionEngine
     private val currentWord = StringBuilder()
@@ -28,16 +29,6 @@ class RomanNepaliIME : InputMethodService() {
         super.onCreate()
 
         suggestionEngine = SuggestionEngine(this)
-
-        window?.window?.decorView?.setOnApplyWindowInsetsListener { view, insets ->
-            view.setPadding(
-                0,
-                0,
-                0,
-                insets.systemWindowInsetBottom
-            )
-            insets
-        }
 
         updateFullscreenMode()
     }
@@ -58,6 +49,7 @@ class RomanNepaliIME : InputMethodService() {
 
         keyboardView = view.findViewById(R.id.keyboard_view)
         suggestionBar = view.findViewById(R.id.suggestion_bar)
+        mainView = view
 
         suggestionBar?.onSuggestionClickListener = { suggestion ->
             applySuggestion(suggestion)
@@ -178,6 +170,7 @@ class RomanNepaliIME : InputMethodService() {
         updateFullscreenMode()
 
         keyboardView?.rebuild()
+        mainView?.requestApplyInsets()
     }
 
     override fun onStartInput(
