@@ -5,6 +5,7 @@ import android.graphics.Color
 import android.graphics.Rect
 import android.util.AttributeSet
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
@@ -23,28 +24,53 @@ class GboardKeyboardView @JvmOverloads constructor(
     private val SYMBOLS = "KEY_SYMBOLS"
     private val DOT = "KEY_DOT"
     private val ENTER = "KEY_ENTER"
+    private val COMMA = "KEY_COMMA"
 
-    private val lettersRows: List<List<String?>> = listOf(
-        listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"),
-        listOf("q", "w", "e", "r", "t", "y", "u", "i", "o", "p"),
-        listOf(null, "a", "s", "d", "f", "g", "h", "j", "k", "l"),
-        listOf(SHIFT, "z", "x", "c", "v", "b", "n", "m", BACKSPACE),
-        listOf(SYMBOLS, SPACE, DOT, ENTER)
+    private data class KeyDef(val label: String?, val weight: Float)
+
+    private val lettersRows: List<List<KeyDef>> = listOf(
+        listOf(
+            KeyDef("q", 1f), KeyDef("w", 1f), KeyDef("e", 1f), KeyDef("r", 1f),
+            KeyDef("t", 1f), KeyDef("y", 1f), KeyDef("u", 1f), KeyDef("i", 1f),
+            KeyDef("o", 1f), KeyDef("p", 1f)
+        ),
+        listOf(
+            KeyDef(null, 0.5f), KeyDef("a", 1f), KeyDef("s", 1f), KeyDef("d", 1f),
+            KeyDef("f", 1f), KeyDef("g", 1f), KeyDef("h", 1f), KeyDef("j", 1f),
+            KeyDef("k", 1f), KeyDef("l", 1f), KeyDef(null, 0.5f)
+        ),
+        listOf(
+            KeyDef(SHIFT, 1.6f), KeyDef("z", 1f), KeyDef("x", 1f), KeyDef("c", 1f),
+            KeyDef("v", 1f), KeyDef("b", 1f), KeyDef("n", 1f), KeyDef("m", 1f),
+            KeyDef(BACKSPACE, 1.6f)
+        ),
+        listOf(
+            KeyDef(SYMBOLS, 1.6f), KeyDef(COMMA, 1f), KeyDef(SPACE, 4.6f),
+            KeyDef(DOT, 1f), KeyDef(ENTER, 1.6f)
+        )
     )
 
-    private val symbolRows: List<List<String?>> = listOf(
-        listOf("!", "@", "#", "$", "%", "^", "&", "*", "(", ")"),
-        listOf("-", "_", "=", "+", "[", "]", "{", "}", "\\", "|"),
-        listOf(";", ":", "'", "\"", ",", "<", ".", ">", "/", "?"),
-        listOf(SYMBOLS, SPACE, DOT, ENTER)
+    private val symbolRows: List<List<KeyDef>> = listOf(
+        listOf(
+            KeyDef("1", 1f), KeyDef("2", 1f), KeyDef("3", 1f), KeyDef("4", 1f),
+            KeyDef("5", 1f), KeyDef("6", 1f), KeyDef("7", 1f), KeyDef("8", 1f),
+            KeyDef("9", 1f), KeyDef("0", 1f)
+        ),
+        listOf(
+            KeyDef("!", 1f), KeyDef("@", 1f), KeyDef("#", 1f), KeyDef("$", 1f),
+            KeyDef("%", 1f), KeyDef("^", 1f), KeyDef("&", 1f), KeyDef("*", 1f),
+            KeyDef("(", 1f), KeyDef(")", 1f)
+        ),
+        listOf(
+            KeyDef("-", 1f), KeyDef("_", 1f), KeyDef("=", 1f), KeyDef("+", 1f),
+            KeyDef("[", 1f), KeyDef("]", 1f), KeyDef("{", 1f), KeyDef("}", 1f),
+            KeyDef("\\", 1f), KeyDef("|", 1f)
+        ),
+        listOf(
+            KeyDef(SYMBOLS, 1.6f), KeyDef(COMMA, 1f), KeyDef(SPACE, 4.6f),
+            KeyDef(DOT, 1f), KeyDef(ENTER, 1.6f)
+        )
     )
-
-    private val shiftWeight = 1.5f
-    private val backspaceWeight = 1.5f
-    private val spaceWeight = 4f
-    private val symbolsWeight = 2f
-    private val dotWeight = 1.2f
-    private val enterWeight = 2f
 
     // Remember letter keys so we can re-render upper/lower case without a full rebuild.
     private val letterButtons = mutableListOf<Pair<Button, String>>()
@@ -57,7 +83,7 @@ class GboardKeyboardView @JvmOverloads constructor(
     init {
         orientation = VERTICAL
         gravity = Gravity.CENTER
-        setBackgroundColor(Color.rgb(28, 27, 31))
+        setBackgroundColor(Color.parseColor("#121212"))
         buildKeyboard()
     }
 
@@ -82,10 +108,10 @@ class GboardKeyboardView @JvmOverloads constructor(
             }
 
             rowEntries.forEach { entry ->
-                if (entry != null) {
+                if (entry.label != null) {
                     addEntry(row, entry)
                 } else {
-                    addSpacer(row)
+                    addSpacer(row, entry.weight)
                 }
             }
 
@@ -95,36 +121,38 @@ class GboardKeyboardView @JvmOverloads constructor(
         refreshKeyLabels()
     }
 
-    private fun addEntry(row: LinearLayout, entry: String) {
-        when (entry) {
-            SHIFT -> addActionKey(row, "⇧", shiftWeight, click = { toggleShift() })
+    private fun addEntry(row: LinearLayout, entry: KeyDef) {
+        when (entry.label) {
+            SHIFT -> addActionKey(row, "⇧", entry.weight, click = { toggleShift() })
             BACKSPACE -> addActionKey(
                 row,
                 "⌫",
-                backspaceWeight,
+                entry.weight,
                 click = { onKeyPressed?.invoke("⌫") },
                 repeat = true
             )
             SPACE -> addActionKey(
                 row,
                 " ",
-                spaceWeight,
+                entry.weight,
                 click = { onKeyPressed?.invoke(" ") },
                 onLongPress = { onKeyLongPressed?.invoke(" ") }
             )
             SYMBOLS -> addActionKey(
                 row,
                 if (isSymbols) "ABC" else "?123",
-                symbolsWeight,
+                entry.weight,
                 click = { toggleSymbols() }
             )
-            DOT -> addActionKey(row, ".", dotWeight, click = { onKeyPressed?.invoke(".") })
-            ENTER -> addActionKey(row, "↵", enterWeight, click = { onKeyPressed?.invoke("↵") })
+            COMMA -> addActionKey(row, ",", entry.weight, click = { onKeyPressed?.invoke(",") })
+            DOT -> addActionKey(row, ".", entry.weight, click = { onKeyPressed?.invoke(".") })
+            ENTER -> addActionKey(row, "→", entry.weight, click = { onKeyPressed?.invoke("↵") })
 
             else -> {
-                val isLetter = entry.length == 1 && entry[0] in 'a'..'z'
-                addKey(row, labelFor(entry), 1f, isLetter) {
-                    val sent = if (isLetter && isShifted) entry.uppercase() else entry
+                val text = entry.label ?: return
+                val isLetter = text.length == 1 && text[0] in 'a'..'z'
+                addKey(row, labelFor(text), entry.weight, isLetter) {
+                    val sent = if (isLetter && isShifted) text.uppercase() else text
                     onKeyPressed?.invoke(sent)
                     if (isLetter && isShifted) {
                         isShifted = false
@@ -132,7 +160,7 @@ class GboardKeyboardView @JvmOverloads constructor(
                     }
                 }.also { key ->
                     if (isLetter) {
-                        letterButtons.add(key to entry)
+                        letterButtons.add(key to text)
                     }
                 }
             }
@@ -148,7 +176,10 @@ class GboardKeyboardView @JvmOverloads constructor(
     ): Button {
         val key = styleKey(Button(context), isLetter)
         key.text = label
-        key.setOnClickListener { onClick() }
+        key.setOnClickListener {
+            key.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+            onClick()
+        }
         key.layoutParams = LinearLayout.LayoutParams(
             0,
             LayoutParams.MATCH_PARENT,
@@ -184,6 +215,7 @@ class GboardKeyboardView @JvmOverloads constructor(
         val repeatRunnable = object : Runnable {
             override fun run() {
                 if (longPressFired) {
+                    key.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                     click()
                     key.postDelayed(this, 40)
                 }
@@ -242,19 +274,20 @@ class GboardKeyboardView @JvmOverloads constructor(
                 longPressFired = false
                 return@setOnClickListener
             }
+            key.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
             click()
         }
 
         row.addView(key)
     }
 
-    private fun addSpacer(row: LinearLayout) {
+    private fun addSpacer(row: LinearLayout, weight: Float) {
         val spacer = View(context)
         spacer.visibility = View.INVISIBLE
         spacer.layoutParams = LinearLayout.LayoutParams(
             0,
             LayoutParams.MATCH_PARENT,
-            1f
+            weight
         )
         row.addView(spacer)
     }

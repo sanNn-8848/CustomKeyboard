@@ -5,6 +5,8 @@ import android.inputmethodservice.InputMethodService
 import android.os.Handler
 import android.os.Looper
 import android.view.View
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import com.romannepali.keyboard.suggestion.SuggestionEngine
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -51,6 +53,13 @@ class RomanNepaliIME : InputMethodService() {
         suggestionBar = view.findViewById(R.id.suggestion_bar)
         mainView = view
 
+        // Keep the keyboard above system navigation/gesture bars in all orientations.
+        ViewCompat.setOnApplyWindowInsetsListener(view) { v, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            v.setPadding(0, 0, 0, bars.bottom)
+            insets
+        }
+
         suggestionBar?.onSuggestionClickListener = { suggestion ->
             applySuggestion(suggestion)
         }
@@ -69,6 +78,12 @@ class RomanNepaliIME : InputMethodService() {
                     "." -> {
                         finishCurrentWord()
                         ic.commitText(".", 1)
+                        suggestionBar?.clearSuggestions()
+                    }
+
+                    "," -> {
+                        finishCurrentWord()
+                        ic.commitText(",", 1)
                         suggestionBar?.clearSuggestions()
                     }
 

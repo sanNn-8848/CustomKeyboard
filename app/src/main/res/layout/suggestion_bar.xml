@@ -4,8 +4,17 @@
     android:layout_height="match_parent"
     android:orientation="horizontal"
     android:gravity="center_vertical"
-    android:paddingLeft="2dp"
-    android:paddingRight="2dp">
+    android:paddingLeft="4dp"
+    android:paddingRight="4dp">
+
+    <ImageButton
+        android:id="@+id/settings_gear"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:src="@drawable/ic_settings"
+        android:background="?android:attr/selectableItemBackgroundBorderless"
+        android:contentDescription="@string/settings_title"
+        android:layout_marginRight="4dp" />
 
     <TextView
         android:id="@+id/suggestion_1"

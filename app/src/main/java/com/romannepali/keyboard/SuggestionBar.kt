@@ -1,12 +1,14 @@
 package com.romannepali.keyboard
 
 import android.content.Context
+import android.content.Intent
 import android.util.AttributeSet
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
+import com.romannepali.keyboard.settings.SettingsActivity
 
 class SuggestionBar @JvmOverloads constructor(
     context: Context,
@@ -26,6 +28,12 @@ class SuggestionBar @JvmOverloads constructor(
             findViewById(R.id.suggestion_2),
             findViewById(R.id.suggestion_3)
         )
+
+        findViewById<View>(R.id.settings_gear).setOnClickListener {
+            val intent = Intent(context, SettingsActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+        }
         
         suggestionViews.forEach { view ->
             view.setOnClickListener {
