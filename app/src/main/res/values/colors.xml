@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark theme -->
+    <color name="keyboard_bg_dark">#FF121212</color>
+    <color name="letter_key_dark">#FF2C2C2C</color>
+    <color name="letter_key_dark_pressed">#FF3D3D3D</color>
+    <color name="action_key_dark">#FF3C3C3C</color>
+    <color name="action_key_dark_pressed">#FF4A4A4A</color>
+    <color name="letter_text_dark">#FFFFFFFF</color>
+    <color name="icon_dark">#FFE6E8EB</color>
+    <color name="space_label_dark">#FF9AA0A6</color>
+
+    <!-- Light theme -->
+    <color name="keyboard_bg_light">#FFE7EAEE</color>
+    <color name="letter_key_light">#FFFFFFFF</color>
+    <color name="letter_key_light_pressed">#FFDDE0E4</color>
+    <color name="action_key_light">#FFE1E4E8</color>
+    <color name="action_key_light_pressed">#FFD0D4D9</color>
+    <color name="letter_text_light">#FF1F1F1F</color>
+    <color name="icon_light">#FF3C4043</color>
+    <color name="space_label_light">#FF5F6368</color>
+</resources>

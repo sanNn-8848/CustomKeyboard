@@ -75,4 +75,28 @@ class Trie {
         collect(root)
         return result
     }
+
+    fun remove(word: String): Boolean {
+        var existed = false
+
+        fun removeRec(node: TrieNode, index: Int): Boolean {
+            if (index == word.length) {
+                existed = node.isEndOfWord
+                if (!existed) return false
+                node.isEndOfWord = false
+                node.word = null
+                node.frequency = 0
+                return node.children.isEmpty()
+            }
+            val child = node.children[word[index].lowercaseChar()] ?: return false
+            val prune = removeRec(child, index + 1)
+            if (prune) {
+                node.children.remove(word[index].lowercaseChar())
+            }
+            return node.children.isEmpty() && !node.isEndOfWord
+        }
+
+        if (word.isNotEmpty()) removeRec(root, 0)
+        return existed
+    }
 }

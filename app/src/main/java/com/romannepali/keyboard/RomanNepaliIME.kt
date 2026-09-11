@@ -1,6 +1,7 @@
 package com.romannepali.keyboard
 
 import android.content.res.Configuration
+import android.graphics.Color
 import android.inputmethodservice.InputMethodService
 import android.os.Handler
 import android.os.Looper
@@ -19,6 +20,9 @@ class RomanNepaliIME : InputMethodService() {
 
     private lateinit var suggestionEngine: SuggestionEngine
     private val currentWord = StringBuilder()
+
+    // Deleted text remembered for the undo arrow.
+    private var deletedText: String? = null
 
     // Suggestions are computed off the UI thread so typing never stutters.
     private val suggestionExecutor: ExecutorService =
@@ -53,6 +57,11 @@ class RomanNepaliIME : InputMethodService() {
         suggestionBar = view.findViewById(R.id.suggestion_bar)
         mainView = view
 
+        val dark = Prefs.darkTheme(this)
+        val bg = if (dark) Color.parseColor("#121212") else Color.parseColor("#E7EAEE")
+        view.setBackgroundColor(bg)
+        view.findViewById<View>(R.id.suggestion_row).setBackgroundColor(bg)
+
         // Keep the keyboard above system navigation/gesture bars in all orientations.
         ViewCompat.setOnApplyWindowInsetsListener(view) { v, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
@@ -62,6 +71,10 @@ class RomanNepaliIME : InputMethodService() {
 
         suggestionBar?.onSuggestionClickListener = { suggestion ->
             applySuggestion(suggestion)
+        }
+
+        suggestionBar?.onUndoClickListener = {
+            undoDelete()
         }
 
         keyboardView?.onKeyPressed = { text ->
@@ -94,6 +107,10 @@ class RomanNepaliIME : InputMethodService() {
                     }
 
                     "⌫" -> {
+                        val restored = deletedText
+                        val deleted = ic.getTextBeforeCursor(1, 0)?.toString() ?: ""
+                        deletedText = if (deleted == restored) restored + deleted else deleted
+
                         if (currentWord.isNotEmpty()) {
                             currentWord.deleteCharAt(currentWord.length - 1)
                             updateSuggestions()
@@ -102,6 +119,7 @@ class RomanNepaliIME : InputMethodService() {
                         }
 
                         ic.deleteSurroundingText(1, 0)
+                        suggestionBar?.setUndoVisible(deletedText?.isNotEmpty() == true)
                     }
 
                     "⇧" -> {
@@ -137,6 +155,11 @@ class RomanNepaliIME : InputMethodService() {
     }
 
     private fun updateSuggestions() {
+        if (!Prefs.suggestions(this)) {
+            mainHandler.post { suggestionBar?.clearSuggestions() }
+            return
+        }
+
         val word = currentWord.toString()
         if (word.isEmpty()) {
             mainHandler.post { suggestionBar?.clearSuggestions() }
@@ -172,11 +195,32 @@ class RomanNepaliIME : InputMethodService() {
 
         ic.commitText(suggestion, 1)
 
-        suggestionEngine.learnWord(suggestion)
-        suggestionEngine.updateContext(suggestion)
+        val words = suggestion.split(Regex("\\s+")).filter { it.isNotBlank() }
+        words.forEach { word ->
+            suggestionEngine.learnWord(word)
+            suggestionEngine.updateContext(word)
+        }
 
         currentWord.clear()
         suggestionBar?.clearSuggestions()
+    }
+
+    private fun undoDelete() {
+        val ic = currentInputConnection ?: return
+        val restored = deletedText ?: return
+
+        ic.commitText(restored, 1)
+
+        if (restored.all { it.isLetter() }) {
+            currentWord.append(restored)
+            updateSuggestions()
+        } else {
+            finishCurrentWord()
+            suggestionBar?.clearSuggestions()
+        }
+
+        deletedText = null
+        suggestionBar?.setUndoVisible(false)
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -197,7 +241,10 @@ class RomanNepaliIME : InputMethodService() {
         // Invalidate any in-flight suggestion computation.
         suggestionJob++
         currentWord.clear()
+        deletedText = null
+        suggestionBar?.setUndoVisible(false)
         suggestionBar?.clearSuggestions()
+        keyboardView?.applyThemeIfChanged()
     }
 
     override fun onDestroy() {

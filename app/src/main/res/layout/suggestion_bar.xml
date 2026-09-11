@@ -8,6 +8,16 @@
     android:paddingRight="4dp">
 
     <ImageButton
+        android:id="@+id/clock_tap_undo"
+        android:layout_width="36dp"
+        android:layout_height="36dp"
+        android:src="@drawable/ic_undo"
+        android:background="?android:attr/selectableItemBackgroundBorderless"
+        android:contentDescription="@string/undo_content_description"
+        android:visibility="gone"
+        android:layout_marginRight="2dp" />
+
+    <ImageButton
         android:id="@+id/settings_gear"
         android:layout_width="32dp"
         android:layout_height="32dp"

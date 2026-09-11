@@ -79,11 +79,12 @@ class GboardKeyboardView @JvmOverloads constructor(
         private set
 
     private var isSymbols = false
+    private var darkTheme = true
 
     init {
         orientation = VERTICAL
         gravity = Gravity.CENTER
-        setBackgroundColor(Color.parseColor("#121212"))
+        darkTheme = Prefs.darkTheme(context)
         buildKeyboard()
     }
 
@@ -93,6 +94,7 @@ class GboardKeyboardView @JvmOverloads constructor(
     private fun buildKeyboard() {
         removeAllViews()
         letterButtons.clear()
+        setBackgroundColor(themeBackground())
 
         val rows = if (isSymbols) symbolRows else lettersRows
 
@@ -123,30 +125,34 @@ class GboardKeyboardView @JvmOverloads constructor(
 
     private fun addEntry(row: LinearLayout, entry: KeyDef) {
         when (entry.label) {
-            SHIFT -> addActionKey(row, "⇧", entry.weight, click = { toggleShift() })
+            SHIFT -> addActionKey(
+                row,
+                entry.weight,
+                iconRes = R.drawable.ic_shift,
+                click = { toggleShift() }
+            )
             BACKSPACE -> addActionKey(
                 row,
-                "⌫",
                 entry.weight,
+                iconRes = R.drawable.ic_backspace,
                 click = { onKeyPressed?.invoke("⌫") },
                 repeat = true
             )
-            SPACE -> addActionKey(
-                row,
-                " ",
-                entry.weight,
-                click = { onKeyPressed?.invoke(" ") },
-                onLongPress = { onKeyLongPressed?.invoke(" ") }
-            )
+            SPACE -> addSpaceKey(row, entry.weight)
             SYMBOLS -> addActionKey(
                 row,
-                if (isSymbols) "ABC" else "?123",
                 entry.weight,
+                label = if (isSymbols) "ABC" else "?123",
                 click = { toggleSymbols() }
             )
-            COMMA -> addActionKey(row, ",", entry.weight, click = { onKeyPressed?.invoke(",") })
-            DOT -> addActionKey(row, ".", entry.weight, click = { onKeyPressed?.invoke(".") })
-            ENTER -> addActionKey(row, "→", entry.weight, click = { onKeyPressed?.invoke("↵") })
+            COMMA -> addActionKey(row, entry.weight, label = ",", click = { onKeyPressed?.invoke(",") })
+            DOT -> addActionKey(row, entry.weight, label = ".", click = { onKeyPressed?.invoke(".") })
+            ENTER -> addActionKey(
+                row,
+                entry.weight,
+                iconRes = R.drawable.ic_enter,
+                click = { onKeyPressed?.invoke("↵") }
+            )
 
             else -> {
                 val text = entry.label ?: return
@@ -157,6 +163,7 @@ class GboardKeyboardView @JvmOverloads constructor(
                     if (isLetter && isShifted) {
                         isShifted = false
                         refreshKeyLabels()
+                        styleShiftIcon()
                     }
                 }.also { key ->
                     if (isLetter) {
@@ -166,6 +173,8 @@ class GboardKeyboardView @JvmOverloads constructor(
             }
         }
     }
+
+    private var shiftKey: Button? = null
 
     private fun addKey(
         row: LinearLayout,
@@ -177,7 +186,9 @@ class GboardKeyboardView @JvmOverloads constructor(
         val key = styleKey(Button(context), isLetter)
         key.text = label
         key.setOnClickListener {
-            key.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+            if (Prefs.vibration(context)) {
+                key.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+            }
             onClick()
         }
         key.layoutParams = LinearLayout.LayoutParams(
@@ -193,14 +204,18 @@ class GboardKeyboardView @JvmOverloads constructor(
 
     private fun addActionKey(
         row: LinearLayout,
-        label: String,
         weight: Float,
+        label: String = "",
+        iconRes: Int? = null,
         click: () -> Unit,
-        onLongPress: (() -> Unit)? = null,
         repeat: Boolean = false
     ) {
         val key = styleKey(Button(context), false)
-        key.text = label
+        if (iconRes != null) {
+            applyIcon(key, iconRes, iconColor())
+        } else {
+            key.text = label
+        }
         key.layoutParams = LinearLayout.LayoutParams(
             0,
             LayoutParams.MATCH_PARENT,
@@ -209,13 +224,20 @@ class GboardKeyboardView @JvmOverloads constructor(
             setMargins(3, 3, 3, 3)
         }
 
+        if (iconRes == R.drawable.ic_shift) {
+            shiftKey = key
+            styleShiftIcon()
+        }
+
         val longPressTimeout = ViewConfiguration.getLongPressTimeout().toLong()
         var longPressFired = false
 
         val repeatRunnable = object : Runnable {
             override fun run() {
                 if (longPressFired) {
-                    key.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    if (Prefs.vibration(context)) {
+                        key.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    }
                     click()
                     key.postDelayed(this, 40)
                 }
@@ -227,8 +249,6 @@ class GboardKeyboardView @JvmOverloads constructor(
             if (repeat) {
                 click()
                 key.postDelayed(repeatRunnable, 40)
-            } else {
-                onLongPress?.invoke()
             }
         }
 
@@ -274,10 +294,41 @@ class GboardKeyboardView @JvmOverloads constructor(
                 longPressFired = false
                 return@setOnClickListener
             }
-            key.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+            if (Prefs.vibration(context)) {
+                key.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+            }
             click()
         }
 
+        row.addView(key)
+    }
+
+    private fun addSpaceKey(row: LinearLayout, weight: Float) {
+        val key = styleKey(Button(context), false)
+        key.text = context.getString(R.string.space_label)
+        key.textSize = 13f
+        key.setTextColor(spaceLabelColor())
+        key.gravity = Gravity.CENTER
+        key.layoutParams = LinearLayout.LayoutParams(
+            0,
+            LayoutParams.MATCH_PARENT,
+            weight
+        ).apply {
+            setMargins(3, 3, 3, 3)
+        }
+        key.setOnClickListener {
+            if (Prefs.vibration(context)) {
+                key.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+            }
+            onKeyPressed?.invoke(" ")
+        }
+        key.setOnLongClickListener {
+            if (Prefs.vibration(context)) {
+                key.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+            }
+            onKeyLongPressed?.invoke(" ")
+            true
+        }
         row.addView(key)
     }
 
@@ -298,13 +349,35 @@ class GboardKeyboardView @JvmOverloads constructor(
         button.minHeight = 0
         button.minWidth = 0
         button.stateListAnimator = null
+        button.gravity = Gravity.CENTER
         button.textSize = if (isLetter) 18f else 15f
-        button.setTextColor(Color.WHITE)
+        button.setTextColor(letterTextColor())
         button.background = resources.getDrawable(
-            if (isLetter) R.drawable.key_bg else R.drawable.key_bg_action,
+            if (isLetter) {
+                if (darkTheme) R.drawable.key_bg else R.drawable.key_bg_light
+            } else {
+                if (darkTheme) R.drawable.key_bg_action else R.drawable.key_bg_action_light
+            },
             null
         )
         return button
+    }
+
+    private fun applyIcon(button: Button, iconRes: Int, tint: Int) {
+        val icon = resources.getDrawable(iconRes, null).mutate()
+        icon.setTint(tint)
+        button.text = ""
+        button.setCompoundDrawables(icon, null, null, null)
+    }
+
+    private fun styleShiftIcon() {
+        shiftKey?.let { key ->
+            applyIcon(
+                key,
+                R.drawable.ic_shift,
+                if (isShifted) Color.parseColor("#669DF6") else iconColor()
+            )
+        }
     }
 
     private fun labelFor(entry: String): String {
@@ -319,6 +392,7 @@ class GboardKeyboardView @JvmOverloads constructor(
         letterButtons.forEach { (button, entry) ->
             button.text = labelFor(entry)
         }
+        styleShiftIcon()
     }
 
     private fun toggleShift() {
@@ -339,4 +413,24 @@ class GboardKeyboardView @JvmOverloads constructor(
             invalidate()
         }
     }
+
+    fun applyThemeIfChanged() {
+        val preferred = Prefs.darkTheme(context)
+        if (preferred != darkTheme) {
+            darkTheme = preferred
+            rebuild()
+        }
+    }
+
+    private fun themeBackground(): Int =
+        if (darkTheme) Color.parseColor("#121212") else Color.parseColor("#E7EAEE")
+
+    private fun letterTextColor(): Int =
+        if (darkTheme) Color.WHITE else Color.parseColor("#1F1F1F")
+
+    private fun iconColor(): Int =
+        if (darkTheme) Color.parseColor("#E6E8EB") else Color.parseColor("#3C4043")
+
+    private fun spaceLabelColor(): Int =
+        if (darkTheme) Color.parseColor("#9AA0A6") else Color.parseColor("#5F6368")
 }

@@ -5,4 +5,46 @@
     <string name="settings_title">Settings</string>
     <string name="subtype_english">English</string>
     <string name="subtype_nepali">Roman Nepali</string>
+
+    <!-- Settings screen -->
+    <string name="settings_app_name">MeroType</string>
+    <string name="settings_app_subtitle">Roman Nepali Keyboard · 100% offline &amp; private</string>
+    <string name="setup_keyboard">Set up keyboard</string>
+    <string name="enable_keyboard_dialog_title">Enable MeroType</string>
+    <string name="enable_keyboard_dialog_message">To use MeroType you need to enable it on your device. It stays on your phone — nothing is uploaded.</string>
+    <string name="open_settings">Open settings</string>
+    <string name="later">Later</string>
+
+    <string name="section_keyboard">Keyboard</string>
+    <string name="dark_theme">Dark theme</string>
+    <string name="key_vibration">Key vibration</string>
+    <string name="word_suggestions">Word suggestions</string>
+
+    <string name="section_dictionary">Personal dictionary</string>
+    <string name="dictionary_hint">Your words always rank first and are never wiped by \u201cclear learned\u201d.</string>
+    <string name="word_input_hint">Add your own word…</string>
+    <string name="add_word">Add</string>
+    <string name="saved_words">Saved words</string>
+    <string name="learned_words">Learned from your typing</string>
+    <string name="clear_learned">Clear learned</string>
+    <string name="no_saved_words">No saved words yet.</string>
+    <string name="no_learned_words">No learned words yet.</string>
+    <string name="empty_word">Enter a word first.</string>
+    <string name="word_invalid">Letters and spaces only.</string>
+    <string name="word_added">Added \u201c%1$s\u201d</string>
+
+    <string name="section_clipboard">Clipboard</string>
+    <string name="clipboard_hint">Copied text is saved here (last few items).</string>
+    <string name="clear_clipboard">Clear clipboard</string>
+    <string name="no_clipboard">Nothing copied yet.</string>
+
+    <string name="clear_learned_confirmed">Cleared learned words</string>
+    <string name="clear_clipboard_confirmed">Cleared clipboard</string>
+    <string name="word_removed_confirmed">Removed \u201c%1$s\u201d</string>
+    <string name="clip_removed_confirmed">Removed clip</string>
+    <string name="undo">Undo</string>
+
+    <!-- Suggestion / tool bar -->
+    <string name="undo_content_description">Undo delete</string>
+    <string name="space_label">Roman Nepali</string>
 </resources>

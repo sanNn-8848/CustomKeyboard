@@ -49,21 +49,35 @@ class ClipboardManager(private val context: Context) {
             saveHistory()
         }
     }
-    
-    private fun saveHistory() {
-        val prefs = context.getSharedPreferences("clipboard_prefs", Context.MODE_PRIVATE)
-        val texts = clipboardHistory.map { it.text }.toSet()
-        prefs.edit().putStringSet("history", texts).apply()
-    }
-    
-    private fun loadHistory() {
-        val prefs = context.getSharedPreferences("clipboard_prefs", Context.MODE_PRIVATE)
-        val texts = prefs.getStringSet("history", emptySet()) ?: emptySet()
-        clipboardHistory.clear()
-        texts.forEach { text ->
-            clipboardHistory.add(ClipboardItem(text))
+
+    fun removeByText(text: String) {
+        if (clipboardHistory.removeAll { it.text == text }) {
+            saveHistory()
         }
     }
+
+    private fun saveHistory() {
+        val raw = clipboardHistory.joinToString("\n") { it -> "${it.text}\u0001${it.timestamp}" }
+        prefs().edit().putString("history", raw).apply()
+    }
+
+    private fun loadHistory() {
+        val raw = prefs().getString("history", null) ?: return
+        clipboardHistory.clear()
+        raw.lineSequence().forEach { line ->
+            val idx = line.indexOf('\u0001')
+            if (idx > 0) {
+                val text = line.substring(0, idx)
+                val timestamp = line.substring(idx + 1).toLongOrNull() ?: 0L
+                if (text.isNotBlank()) {
+                    clipboardHistory.add(ClipboardItem(text, timestamp))
+                }
+            }
+        }
+    }
+
+    private fun prefs() =
+        context.getSharedPreferences("clipboard_prefs", Context.MODE_PRIVATE)
     
     fun search(query: String): List<ClipboardItem> {
         return clipboardHistory.filter { 

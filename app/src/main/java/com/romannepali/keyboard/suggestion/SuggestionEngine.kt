@@ -6,6 +6,7 @@ class SuggestionEngine(private val context: android.content.Context) {
     private val trie = Trie()
     private val ngramModel = NgramModel()
     private val charModel = CharModel(context)
+    private val store = DictionaryStore(context)
 
     private val learnedWords = HashMap<String, Int>()
 
@@ -19,6 +20,8 @@ class SuggestionEngine(private val context: android.content.Context) {
     init {
     loadDictionary()
     charModel.loadModel()
+    learnedWords.putAll(store.loadLearned())
+    store.loadSaved().forEach { trie.insert(it, SAVED_WORD_FREQUENCY) }
       }
 
     private fun loadDictionary() {
@@ -270,6 +273,13 @@ class SuggestionEngine(private val context: android.content.Context) {
 
         // Fill any remaining slots from the character model.
         val result = ArrayList(knownResult)
+        // Split no-space compounds into known words ("lamoharu" -> "lamo haru").
+        if (result.size < limit) {
+            val splits = splitCandidates(currentWord)
+                .filter { it !in result }
+            result.addAll(splits.take(limit - result.size))
+        }
+        // Fill any remaining slots from the character model.
         if (result.size < limit) {
             val generated = charModel.generate(
                 prefixInput = currentWord,
@@ -287,6 +297,35 @@ class SuggestionEngine(private val context: android.content.Context) {
         }
 
         return result
+    }
+
+    /**
+     * Decomposes a no-space string into "prefix suffix" where the prefix is a
+     * known word (dictionary, saved or learned) and the suffix is either another
+     * known word or a common Nepali grammatical suffix. This lets the keyboard
+     * merge/split compounds like "lamoharu" -> "lamo haru".
+     */
+    private fun splitCandidates(word: String): List<String> {
+        if (word.length < 4) return emptyList()
+
+        val hits = ArrayList<Pair<String, Pair<Int, Boolean>>>()
+        for (len in 2 until word.length) {
+            val prefix = word.substring(0, len)
+            val suffix = word.substring(len)
+            if (suffix.length < 2) continue
+            if (!trie.contains(prefix)) continue
+
+            val suffixIsFullWord = trie.contains(suffix)
+            if (!suffixIsFullWord && suffix !in KNOWN_SUFFIXES) continue
+
+            hits.add("$prefix $suffix" to (trie.getFrequency(prefix) to suffixIsFullWord))
+        }
+
+        hits.sortWith(
+            compareByDescending<Pair<String, Pair<Int, Boolean>>> { it.second.second }
+                .thenByDescending { it.second.first }
+        )
+        return hits.map { it.first }.distinct()
     }
 
     fun getAutoCorrection(word: String): String? {
@@ -309,6 +348,7 @@ class SuggestionEngine(private val context: android.content.Context) {
         learnedWords.merge(word.lowercase(), 1, Int::plus)
         trie.insert(word.lowercase(), learnedWords[word.lowercase()] ?: 1)
         knownWordsCache = null
+        store.saveLearned(learnedWords)
     }
 
     fun updateContext(word: String) {
@@ -316,6 +356,65 @@ class SuggestionEngine(private val context: android.content.Context) {
         if (contextWords.size > maxContextSize) {
             contextWords.removeAt(0)
         }
+    }
+
+    /** Words the user added to their personal dictionary. */
+    fun getSavedWords(): List<String> = store.loadSaved()
+
+    fun addPersonalWord(word: String): Boolean {
+        val clean = word.trim().lowercase()
+        if (clean.isEmpty()) return false
+        for (ch in clean) {
+            if (!ch.isLetter() && ch != ' ' && ch != '\'') return false
+        }
+
+        val saved = store.loadSaved().toMutableList()
+        if (clean !in saved) {
+            saved.add(clean)
+            store.saveSaved(saved)
+            trie.insert(clean, SAVED_WORD_FREQUENCY)
+            knownWordsCache = null
+        }
+        return true
+    }
+
+    fun removePersonalWord(word: String) {
+        val saved = store.loadSaved().toMutableList()
+        if (saved.remove(word)) {
+            store.saveSaved(saved)
+        }
+        trie.remove(word)
+        knownWordsCache = null
+    }
+
+    /** Words this user has typed (learned automatically). */
+    fun getLearnedWords(): List<Pair<String, Int>> =
+        learnedWords.entries.map { it.key to it.value }
+            .sortedByDescending { it.second }
+
+    fun removeLearnedWord(word: String) {
+        if (learnedWords.remove(word.lowercase()) != null) {
+            trie.remove(word.lowercase())
+            knownWordsCache = null
+            store.saveLearned(learnedWords)
+        }
+    }
+
+    /** Clears auto-learned words, keeping the user's saved dictionary. */
+    fun clearLearnedWords() {
+        learnedWords.keys.forEach { trie.remove(it.lowercase()) }
+        learnedWords.clear()
+        knownWordsCache = null
+        store.saveLearned(learnedWords)
+    }
+
+    fun restoreLearned(words: Map<String, Int>) {
+        words.forEach { (word, count) ->
+            learnedWords[word] = count
+            trie.insert(word.lowercase(), count)
+        }
+        knownWordsCache = null
+        store.saveLearned(learnedWords)
     }
 
     private fun getAllKnownWords(): List<String> {
@@ -360,5 +459,17 @@ class SuggestionEngine(private val context: android.content.Context) {
         val maxLength = maxOf(input.length, candidate.length, 1)
         val similarity = 1.0 - distance.toDouble() / maxLength.toDouble()
         return similarity * 5.0
+    }
+
+    private companion object {
+        /** Frequency used for words added to the personal dictionary so they rank high. */
+        const val SAVED_WORD_FREQUENCY = 5000
+
+        /** Common Nepali grammatical suffixes used by the no-space splitter. */
+        val KNOWN_SUFFIXES = setOf(
+            "haru", "lai", "le", "ko", "ka", "ki", "ma", "la",
+            "bata", "dekhi", "samma", "pani", "nai", "ta", "ni",
+            "sanga", "gari", "jasto"
+        )
     }
 }
