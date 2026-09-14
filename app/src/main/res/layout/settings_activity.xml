@@ -18,23 +18,44 @@
             android:padding="20dp">
 
             <!-- Header -->
-            <TextView
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:gravity="center"
-                android:text="@string/settings_app_name"
-                android:textColor="?android:attr/textColorPrimary"
-                android:textSize="28sp"
-                android:textStyle="bold" />
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:background="@drawable/bg_settings_header"
+                android:padding="20dp">
 
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:gravity="center"
-                android:paddingTop="4dp"
-                android:text="@string/settings_app_subtitle"
-                android:textColor="?android:attr/textColorSecondary"
-                android:textSize="14sp" />
+                <ImageView
+                    android:layout_width="56dp"
+                    android:layout_height="56dp"
+                    android:src="@mipmap/ic_launcher"
+                    android:contentDescription="@string/app_name" />
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_marginStart="16dp"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/settings_app_name"
+                        android:textColor="#FFFFFFFF"
+                        android:textSize="26sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:paddingTop="2dp"
+                        android:text="@string/settings_app_subtitle"
+                        android:textColor="#DDFFFFFF"
+                        android:textSize="13sp" />
+                </LinearLayout>
+            </LinearLayout>
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btn_setup_keyboard"
@@ -64,8 +85,8 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="@string/section_keyboard"
-                        android:textColor="?android:attr/textColorSecondary"
-                        android:textSize="12sp"
+                        android:textColor="@color/accent_soft"
+                        android:textSize="13sp"
                         android:textStyle="bold" />
 
                     <com.google.android.material.switchmaterial.SwitchMaterial
@@ -113,7 +134,7 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="@string/section_dictionary"
-                        android:textColor="?android:attr/textColorPrimary"
+                        android:textColor="@color/accent_soft"
                         android:textSize="16sp"
                         android:textStyle="bold" />
 
@@ -157,7 +178,7 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="16dp"
                         android:text="@string/saved_words"
-                        android:textColor="?android:attr/textColorSecondary"
+                        android:textColor="@color/accent_soft"
                         android:textSize="12sp"
                         android:textStyle="bold" />
 
@@ -181,7 +202,7 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="16dp"
                         android:text="@string/learned_words"
-                        android:textColor="?android:attr/textColorSecondary"
+                        android:textColor="@color/accent_soft"
                         android:textSize="12sp"
                         android:textStyle="bold" />
 
@@ -231,7 +252,7 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="@string/section_clipboard"
-                        android:textColor="?android:attr/textColorPrimary"
+                        android:textColor="@color/accent_soft"
                         android:textSize="16sp"
                         android:textStyle="bold" />
 
@@ -275,7 +296,7 @@
                 android:layout_marginTop="24dp"
                 android:gravity="center"
                 android:text="MeroType"
-                android:textColor="?android:attr/textColorSecondary"
+                android:textColor="@color/accent_soft"
                 android:textSize="13sp" />
         </LinearLayout>
     </ScrollView>

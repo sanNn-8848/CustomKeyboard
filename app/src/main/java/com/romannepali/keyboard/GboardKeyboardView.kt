@@ -1,7 +1,7 @@
 package com.romannepali.keyboard
 
 import android.content.Context
-import android.graphics.Color
+import android.content.res.ColorStateList
 import android.graphics.Rect
 import android.util.AttributeSet
 import android.view.Gravity
@@ -151,6 +151,7 @@ class GboardKeyboardView @JvmOverloads constructor(
                 row,
                 entry.weight,
                 iconRes = R.drawable.ic_enter,
+                tint = accentColor(),
                 click = { onKeyPressed?.invoke("↵") }
             )
 
@@ -207,12 +208,13 @@ class GboardKeyboardView @JvmOverloads constructor(
         weight: Float,
         label: String = "",
         iconRes: Int? = null,
+        tint: Int? = null,
         click: () -> Unit,
         repeat: Boolean = false
     ) {
         val key = styleKey(Button(context), false)
         if (iconRes != null) {
-            applyIcon(key, iconRes, iconColor())
+            applyIcon(key, iconRes, tint ?: iconColor())
         } else {
             key.text = label
         }
@@ -364,10 +366,9 @@ class GboardKeyboardView @JvmOverloads constructor(
     }
 
     private fun applyIcon(button: Button, iconRes: Int, tint: Int) {
-        val icon = resources.getDrawable(iconRes, null).mutate()
-        icon.setTint(tint)
         button.text = ""
-        button.setCompoundDrawables(icon, null, null, null)
+        button.setCompoundDrawablesWithIntrinsicBounds(iconRes, 0, 0, 0)
+        button.compoundDrawableTintList = ColorStateList.valueOf(tint)
     }
 
     private fun styleShiftIcon() {
@@ -375,7 +376,7 @@ class GboardKeyboardView @JvmOverloads constructor(
             applyIcon(
                 key,
                 R.drawable.ic_shift,
-                if (isShifted) Color.parseColor("#669DF6") else iconColor()
+                if (isShifted) accentColor() else iconColor()
             )
         }
     }
@@ -423,14 +424,18 @@ class GboardKeyboardView @JvmOverloads constructor(
     }
 
     private fun themeBackground(): Int =
-        if (darkTheme) Color.parseColor("#121212") else Color.parseColor("#E7EAEE")
+        if (darkTheme) themedColor(R.color.keyboard_bg_dark) else themedColor(R.color.keyboard_bg_light)
 
     private fun letterTextColor(): Int =
-        if (darkTheme) Color.WHITE else Color.parseColor("#1F1F1F")
+        if (darkTheme) themedColor(R.color.letter_text_dark) else themedColor(R.color.letter_text_light)
 
     private fun iconColor(): Int =
-        if (darkTheme) Color.parseColor("#E6E8EB") else Color.parseColor("#3C4043")
+        if (darkTheme) themedColor(R.color.icon_dark) else themedColor(R.color.icon_light)
+
+    private fun accentColor(): Int = themedColor(R.color.accent)
 
     private fun spaceLabelColor(): Int =
-        if (darkTheme) Color.parseColor("#9AA0A6") else Color.parseColor("#5F6368")
+        if (darkTheme) themedColor(R.color.space_label_dark) else themedColor(R.color.space_label_light)
+
+    private fun themedColor(resId: Int): Int = resources.getColor(resId, null)
 }
