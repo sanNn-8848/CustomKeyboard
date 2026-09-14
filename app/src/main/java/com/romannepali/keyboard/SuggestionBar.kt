@@ -1,9 +1,13 @@
 package com.romannepali.keyboard
 
+import android.animation.ObjectAnimator
+import android.animation.ValueAnimator
 import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Typeface
+import android.os.Handler
+import android.os.Looper
 import android.util.AttributeSet
 import android.util.TypedValue
 import android.view.Gravity
@@ -11,6 +15,7 @@ import android.view.View
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.romannepali.keyboard.settings.SettingsActivity
@@ -26,9 +31,15 @@ class SuggestionBar @JvmOverloads constructor(
     private var centerUndoButton: ImageButton? = null
     private var gearButton: ImageButton? = null
     private var chipsScroll: HorizontalScrollView? = null
+    private var deleteOverlay: FrameLayout? = null
+    private var deleteGlow: ImageView? = null
+    private var blinkAnimator: ObjectAnimator? = null
 
     var onSuggestionClickListener: ((String) -> Unit)? = null
+    var onDeleteSuggestionClickListener: ((String) -> Unit)? = null
     var onUndoClickListener: (() -> Unit)? = null
+
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     init {
         inflate(context, R.layout.suggestion_bar, this)
@@ -37,6 +48,8 @@ class SuggestionBar @JvmOverloads constructor(
         undoButton = findViewById(R.id.clock_tap_undo)
         centerUndoButton = findViewById(R.id.undo_center)
         gearButton = findViewById(R.id.settings_gear)
+
+        buildDeleteOverlay()
 
         gearButton?.setOnClickListener {
             val intent = Intent(context, SettingsActivity::class.java)
@@ -48,6 +61,101 @@ class SuggestionBar @JvmOverloads constructor(
         }
         centerUndoButton?.setOnClickListener {
             onUndoClickListener?.invoke()
+        }
+    }
+
+    private fun buildDeleteOverlay() {
+        val overlay = FrameLayout(context).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                LayoutParams.WRAP_CONTENT,
+                LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            )
+        }
+
+        val pill = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            background = resources.getDrawable(R.drawable.bg_delete_glow, null)
+            setPadding(dp(14), dp(6), dp(18), dp(6))
+        }
+
+        val glow = ImageView(context).apply {
+            background = resources.getDrawable(R.drawable.bg_delete_glow, null)
+            contentDescription = null
+            visibility = GONE
+            layoutParams = FrameLayout.LayoutParams(
+                dp(44),
+                dp(44),
+                Gravity.CENTER
+            )
+        }
+        overlay.addView(glow)
+
+        val trash = ImageButton(context).apply {
+            background = null
+            setImageResource(R.drawable.ic_trash)
+            imageTintList = ColorStateList.valueOf(resources.getColor(R.color.accent, null))
+            contentDescription = resources.getString(R.string.delete_suggestion)
+            val counterLp = FrameLayout.LayoutParams(dp(30), dp(30), Gravity.CENTER)
+            layoutParams = counterLp
+            setOnClickListener {
+                val word = tag as? String
+                stopDeleteBlink()
+                overlay.visibility = GONE
+                if (word != null) {
+                    onDeleteSuggestionClickListener?.invoke(word)
+                }
+            }
+        }
+        overlay.addView(trash)
+
+        val label = TextView(context).apply {
+            text = resources.getString(R.string.delete_suggestion)
+            setTextColor(resources.getColor(R.color.accent_soft, null))
+            textSize = 13f
+            isSingleLine = true
+            setPadding(dp(6), 0, 0, 0)
+        }
+        pill.addView(label)
+        overlay.addView(pill)
+
+        overlay.visibility = GONE
+        addView(overlay)
+        deleteOverlay = overlay
+        deleteGlow = glow
+    }
+
+    private fun showDeleteOverlay(word: String) {
+        val overlay = deleteOverlay ?: return
+        overlay.tag = word
+        overlay.visibility = VISIBLE
+        startDeleteBlink()
+        mainHandler.removeCallbacksAndMessages(null)
+        mainHandler.postDelayed({
+            overlay.visibility = GONE
+            stopDeleteBlink()
+        }, 3000)
+    }
+
+    private fun startDeleteBlink() {
+        val glow = deleteGlow ?: return
+        stopDeleteBlink()
+        glow.visibility = VISIBLE
+        blinkAnimator = ObjectAnimator.ofFloat(glow, View.ALPHA, 0.35f, 1f).apply {
+            duration = 700
+            repeatCount = ValueAnimator.INFINITE
+            repeatMode = ValueAnimator.REVERSE
+            start()
+        }
+    }
+
+    private fun stopDeleteBlink() {
+        blinkAnimator?.cancel()
+        blinkAnimator = null
+        deleteGlow?.let {
+            it.visibility = GONE
+            it.alpha = 1f
         }
     }
 
@@ -76,15 +184,27 @@ class SuggestionBar @JvmOverloads constructor(
                         marginEnd = dp(2)
                     }
                     setOnClickListener { onSuggestionClickListener?.invoke(text.toString()) }
+                    setOnLongClickListener {
+                        showDeleteOverlay(text.toString())
+                        true
+                    }
                     container.addView(this, lp)
                 }
             }
             chipsScroll?.scrollTo(0, 0)
         }
+        deleteOverlay?.let { overlay ->
+            overlay.visibility = GONE
+            stopDeleteBlink()
+        }
     }
 
     fun clearSuggestions() {
         chipsContainer?.removeAllViews()
+        deleteOverlay?.let { overlay ->
+            overlay.visibility = GONE
+            stopDeleteBlink()
+        }
     }
 
     fun setUndoState(available: Boolean, centered: Boolean) {

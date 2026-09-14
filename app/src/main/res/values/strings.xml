@@ -20,7 +20,6 @@
     <string name="key_vibration">Key vibration</string>
     <string name="word_suggestions">Word suggestions</string>
     <string name="number_row">Number row</string>
-
     <string name="section_dictionary">Personal dictionary</string>
     <string name="dictionary_hint">Your words always rank first and are never wiped by \u201cclear learned\u201d.</string>
     <string name="word_input_hint">Add your own word…</string>
@@ -47,5 +46,6 @@
 
     <!-- Suggestion / tool bar -->
     <string name="undo_content_description">Undo delete</string>
+    <string name="delete_suggestion">Remove</string>
     <string name="space_label">Roman Nepali</string>
 </resources>

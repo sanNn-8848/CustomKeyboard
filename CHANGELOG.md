@@ -1,5 +1,13 @@
 # MeroType Changelog
 
+## [1.1.6] - 2026-09-14
+
+### Fixed
+- Uppercase, backspace, and enter icons now sit perfectly centered inside their keys (icons render as centered ImageViews instead of button compound drawables)
+
+### Added
+- Long-press any suggestion to reveal a remove overlay with a dim glowing LED indicator; tap the trash to delete that suggestion from your dictionary
+
 ## [1.1.5] - 2026-09-14
 
 ### Changed

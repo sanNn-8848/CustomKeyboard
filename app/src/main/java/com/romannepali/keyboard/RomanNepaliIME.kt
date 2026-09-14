@@ -76,6 +76,12 @@ class RomanNepaliIME : InputMethodService() {
             applySuggestion(suggestion)
         }
 
+        suggestionBar?.onDeleteSuggestionClickListener = { word ->
+            suggestionEngine.removeLearnedWord(word)
+            suggestionEngine.removePersonalWord(word)
+            updateSuggestions()
+        }
+
         suggestionBar?.onUndoClickListener = {
             undoDelete()
         }

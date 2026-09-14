@@ -10,6 +10,8 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.widget.Button
+import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 
 class GboardKeyboardView @JvmOverloads constructor(
@@ -204,7 +206,7 @@ class GboardKeyboardView @JvmOverloads constructor(
         }
     }
 
-    private var shiftKey: Button? = null
+    private var shiftKey: View? = null
 
     private fun addKey(
         row: LinearLayout,
@@ -241,11 +243,27 @@ class GboardKeyboardView @JvmOverloads constructor(
         click: () -> Unit,
         repeat: Boolean = false
     ) {
-        val key = styleKey(Button(context), false)
-        if (iconRes != null) {
-            applyIcon(key, iconRes, tint ?: iconColor())
+        val key: View = if (iconRes != null) {
+            val container = FrameLayout(context)
+            container.background = resources.getDrawable(
+                if (darkTheme) R.drawable.key_bg_action else R.drawable.key_bg_action_light,
+                null
+            )
+            val icon = ImageView(context).apply {
+                layoutParams = FrameLayout.LayoutParams(
+                    dp(38),
+                    dp(38),
+                    Gravity.CENTER
+                )
+                setImageResource(iconRes)
+                imageTintList = ColorStateList.valueOf(tint ?: iconColor())
+                isClickable = false
+                isFocusable = false
+            }
+            container.addView(icon)
+            container
         } else {
-            key.text = label
+            styleKey(Button(context), false).apply { text = label }
         }
         key.layoutParams = LinearLayout.LayoutParams(
             0,
@@ -395,10 +413,12 @@ class GboardKeyboardView @JvmOverloads constructor(
         return button
     }
 
-    private fun applyIcon(button: Button, iconRes: Int, tint: Int) {
-        button.text = ""
-        button.setCompoundDrawablesWithIntrinsicBounds(iconRes, 0, 0, 0)
-        button.compoundDrawableTintList = ColorStateList.valueOf(tint)
+    private fun applyIcon(key: View, iconRes: Int, tint: Int) {
+        val icon = (key as? FrameLayout)?.getChildAt(0) as? ImageView
+        if (icon != null) {
+            icon.setImageResource(iconRes)
+            icon.imageTintList = ColorStateList.valueOf(tint)
+        }
     }
 
     private fun styleShiftIcon() {
