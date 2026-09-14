@@ -1,5 +1,25 @@
 # MeroType Changelog
 
+## [1.1.4] - 2026-09-14
+
+### Added
+- **FrostGlass** visual identity: 16dp rounded glass keys, coral accent, mountain silhouette + static glow, dark/light themes
+- Layered suggestion ranking with confidence scores (dictionary, n-gram, typo, learned, personal, char-model, split/merge)
+- Context-aware predictions (previous words) + sentence-start capitalisation + double-space → `. `
+- 11 unit tests including a prediction latency benchmark (p50 ≈ 0.05 ms)
+
+### Fixed
+- Typo corrections no longer flood common prefixes with 1-2 edit "noise" words
+- Fill suggestions no longer dilute confidence scores
+
+## [1.1.3] - 2026-09-13
+
+### Added
+- Grammar-aware split/merge suggestions (e.g. "meroke" → "mero ke")
+- Clipboard manager + settings UI
+- Undo everywhere (keyboard + suggestion bar)
+- Redesigned settings header
+
 ## [1.1.2] - 2026-09-10
 
 ### Changed
