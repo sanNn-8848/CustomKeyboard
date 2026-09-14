@@ -16,6 +16,8 @@
     <color name="letter_key_dark_pressed">#38FFFFFF</color>
     <color name="action_key_dark">#14FFFFFF</color>
     <color name="action_key_dark_pressed">#2EFFFFFF</color>
+    <color name="action_key_dark_warm">#26FF6B4A</color>
+    <color name="action_key_dark_pressed_warm">#40FF6B4A</color>
     <color name="key_border_dark">#1AFFFFFF</color>
     <color name="border_glow_pressed">#66FF6B4A</color>
     <color name="letter_text_dark">#FFFFFFFF</color>
@@ -30,6 +32,8 @@
     <color name="letter_key_light_pressed">#CCFFFFFF</color>
     <color name="action_key_light">#66FFFFFF</color>
     <color name="action_key_light_pressed">#99FFFFFF</color>
+    <color name="action_key_light_warm">#33FF6B4A</color>
+    <color name="action_key_light_pressed_warm">#66FF6B4A</color>
     <color name="key_border_light">#404A5A66</color>
     <color name="letter_text_light">#FF161922</color>
     <color name="secondary_text_light">#FF5A6270</color>

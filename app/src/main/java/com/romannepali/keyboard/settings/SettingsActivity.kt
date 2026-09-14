@@ -93,6 +93,12 @@ class SettingsActivity : AppCompatActivity() {
         suggestions.setOnCheckedChangeListener { _, checked ->
             Prefs.setSuggestions(this, checked)
         }
+
+        val numberRow = findViewById<SwitchMaterial>(R.id.switch_number_row)
+        numberRow.isChecked = Prefs.numberRow(this)
+        numberRow.setOnCheckedChangeListener { _, checked ->
+            Prefs.setNumberRow(this, checked)
+        }
     }
 
     private fun setupDictionary() {

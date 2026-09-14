@@ -80,6 +80,7 @@ class GboardKeyboardView @JvmOverloads constructor(
 
     private var isSymbols = false
     private var darkTheme = true
+    private var numberRowEnabled = Prefs.numberRow(context)
 
     init {
         orientation = VERTICAL
@@ -97,6 +98,25 @@ class GboardKeyboardView @JvmOverloads constructor(
         setBackgroundColor(themeBackground())
 
         val rows = if (isSymbols) symbolRows else lettersRows
+
+        // Optional top number row (off by default; toggled in settings).
+        if (numberRowEnabled && !isSymbols) {
+            val digitRow = LinearLayout(context).apply {
+                orientation = HORIZONTAL
+                gravity = Gravity.CENTER
+                layoutParams = LayoutParams(
+                    LayoutParams.MATCH_PARENT,
+                    0,
+                    1f
+                )
+            }
+            "1234567890".forEach { c ->
+                addKey(digitRow, c.toString(), 1f, true) {
+                    onKeyPressed?.invoke(c.toString())
+                }
+            }
+            addView(digitRow)
+        }
 
         rows.forEach { rowEntries ->
             val row = LinearLayout(context).apply {
@@ -121,7 +141,16 @@ class GboardKeyboardView @JvmOverloads constructor(
         }
 
         refreshKeyLabels()
+
+        // Keep keys at full row height: grow the keyboard when a 5th row is shown.
+        layoutParams?.let { lp ->
+            lp.height = keyboardHeightPx()
+            layoutParams = lp
+        }
     }
+
+    private fun keyboardHeightPx(): Int =
+        if (numberRowEnabled && !isSymbols) dp(300) else dp(240)
 
     private fun addEntry(row: LinearLayout, entry: KeyDef) {
         when (entry.label) {
@@ -352,6 +381,7 @@ class GboardKeyboardView @JvmOverloads constructor(
         button.minWidth = 0
         button.stateListAnimator = null
         button.gravity = Gravity.CENTER
+        button.setIncludeFontPadding(false)
         button.textSize = if (isLetter) 18f else 15f
         button.setTextColor(letterTextColor())
         button.background = resources.getDrawable(
@@ -417,8 +447,10 @@ class GboardKeyboardView @JvmOverloads constructor(
 
     fun applyThemeIfChanged() {
         val preferred = Prefs.darkTheme(context)
-        if (preferred != darkTheme) {
+        val preferredNumberRow = Prefs.numberRow(context)
+        if (preferred != darkTheme || preferredNumberRow != numberRowEnabled) {
             darkTheme = preferred
+            numberRowEnabled = preferredNumberRow
             rebuild()
         }
     }
@@ -438,4 +470,7 @@ class GboardKeyboardView @JvmOverloads constructor(
         if (darkTheme) themedColor(R.color.space_label_dark) else themedColor(R.color.space_label_light)
 
     private fun themedColor(resId: Int): Int = resources.getColor(resId, null)
+
+    private fun dp(value: Int): Int =
+        (resources.displayMetrics.density * value).toInt()
 }

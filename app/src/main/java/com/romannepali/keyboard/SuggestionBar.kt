@@ -3,10 +3,15 @@ package com.romannepali.keyboard
 import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
+import android.graphics.Typeface
 import android.util.AttributeSet
+import android.util.TypedValue
+import android.view.Gravity
 import android.view.View
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.ImageButton
+import android.widget.LinearLayout
 import android.widget.TextView
 import com.romannepali.keyboard.settings.SettingsActivity
 
@@ -16,21 +21,19 @@ class SuggestionBar @JvmOverloads constructor(
     defStyleAttr: Int = 0
 ) : FrameLayout(context, attrs, defStyleAttr) {
 
-    private var suggestionViews: List<TextView> = emptyList()
+    private var chipsContainer: LinearLayout? = null
     private var undoButton: ImageButton? = null
     private var centerUndoButton: ImageButton? = null
     private var gearButton: ImageButton? = null
+    private var chipsScroll: HorizontalScrollView? = null
+
     var onSuggestionClickListener: ((String) -> Unit)? = null
     var onUndoClickListener: (() -> Unit)? = null
 
     init {
         inflate(context, R.layout.suggestion_bar, this)
-
-        suggestionViews = listOf(
-            findViewById(R.id.suggestion_1),
-            findViewById(R.id.suggestion_2),
-            findViewById(R.id.suggestion_3)
-        )
+        chipsContainer = findViewById(R.id.suggestion_chips_container)
+        chipsScroll = findViewById(R.id.suggestion_scroll)
         undoButton = findViewById(R.id.clock_tap_undo)
         centerUndoButton = findViewById(R.id.undo_center)
         gearButton = findViewById(R.id.settings_gear)
@@ -40,57 +43,63 @@ class SuggestionBar @JvmOverloads constructor(
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(intent)
         }
-
         undoButton?.setOnClickListener {
             onUndoClickListener?.invoke()
         }
-
         centerUndoButton?.setOnClickListener {
             onUndoClickListener?.invoke()
-        }
-
-        suggestionViews.forEach { view ->
-            view.setOnClickListener {
-                val suggestion = view.text.toString()
-                if (suggestion.isNotEmpty()) {
-                    onSuggestionClickListener?.invoke(suggestion)
-                }
-            }
         }
     }
 
     fun showSuggestions(suggestions: List<String>) {
-        suggestionViews.forEachIndexed { index, textView ->
-            if (index < suggestions.size) {
-                textView.text = suggestions[index]
-                textView.visibility = View.VISIBLE
-            } else {
-                textView.text = ""
-                textView.visibility = View.INVISIBLE
+        chipsContainer?.let { container ->
+            container.removeAllViews()
+            suggestions.forEachIndexed { index, text ->
+                val chip = TextView(context).apply {
+                    this.text = text
+                    setTextColor(resources.getColor(R.color.letter_text_dark, null))
+                    textSize = 14f
+                    gravity = Gravity.CENTER
+                    isSingleLine = true
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    setPadding(dp(12), dp(6), dp(12), dp(6))
+                    background = resources.getDrawable(
+                        if (index == 0) R.drawable.bg_suggestion_chip_dark_selected else R.drawable.bg_suggestion_chip_dark,
+                        null
+                    )
+                    typeface = if (index == 0) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+                    val lp = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        dp(36)
+                    ).apply {
+                        marginStart = dp(2)
+                        marginEnd = dp(2)
+                    }
+                    setOnClickListener { onSuggestionClickListener?.invoke(text.toString()) }
+                    container.addView(this, lp)
+                }
             }
+            chipsScroll?.scrollTo(0, 0)
         }
     }
 
     fun clearSuggestions() {
-        suggestionViews.forEach {
-            it.text = ""
-            it.visibility = View.INVISIBLE
-        }
+        chipsContainer?.removeAllViews()
     }
 
     fun setUndoState(available: Boolean, centered: Boolean) {
         if (centered) {
             undoButton?.visibility = GONE
             gearButton?.visibility = GONE
-            suggestionViews.forEach { it.visibility = GONE }
+            chipsContainer?.visibility = GONE
+            chipsScroll?.visibility = GONE
             centerUndoButton?.visibility = VISIBLE
         } else {
             centerUndoButton?.visibility = GONE
             gearButton?.visibility = VISIBLE
             undoButton?.visibility = if (available) VISIBLE else GONE
-            suggestionViews.forEach {
-                it.visibility = if (it.text.isNotEmpty()) VISIBLE else INVISIBLE
-            }
+            chipsContainer?.visibility = VISIBLE
+            chipsScroll?.visibility = VISIBLE
         }
     }
 
@@ -100,21 +109,28 @@ class SuggestionBar @JvmOverloads constructor(
     /** FrostGlass theme switch for the prediction chips and bar icons. */
     fun applyTheme(dark: Boolean) {
         val chip = if (dark) R.drawable.bg_suggestion_chip_dark else R.drawable.bg_suggestion_chip_light
-        val selected =
-            if (dark) R.drawable.bg_suggestion_chip_dark_selected else R.drawable.bg_suggestion_chip_light_selected
+        val selected = if (dark) R.drawable.bg_suggestion_chip_dark_selected else R.drawable.bg_suggestion_chip_light_selected
         val textRes = if (dark) R.color.letter_text_dark else R.color.letter_text_light
         val icon = resources.getColor(if (dark) R.color.icon_dark else R.color.icon_light, null)
         val tint = ColorStateList.valueOf(icon)
 
-        suggestionViews.forEachIndexed { index, view ->
-            view.setBackgroundResource(if (index == 0) selected else chip)
-            view.setTextColor(resources.getColor(textRes, null))
+        chipsContainer?.let { container ->
+            for (i in 0 until container.childCount) {
+                val view = container.getChildAt(i) as? TextView ?: continue
+                view.setBackgroundResource(if (i == 0) selected else chip)
+                view.setTextColor(resources.getColor(textRes, null))
+            }
         }
 
-        undoButton?.setBackgroundResource(chip)
         undoButton?.imageTintList = tint
-        centerUndoButton?.setBackgroundResource(selected)
         centerUndoButton?.imageTintList = tint
         gearButton?.imageTintList = tint
     }
+
+    private fun dp(value: Int): Int =
+        TypedValue.applyDimension(
+            TypedValue.COMPLEX_UNIT_DIP,
+            value.toFloat(),
+            resources.displayMetrics
+        ).toInt()
 }

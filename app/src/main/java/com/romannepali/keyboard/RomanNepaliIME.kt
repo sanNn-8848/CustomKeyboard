@@ -4,7 +4,9 @@ import android.content.res.Configuration
 import android.inputmethodservice.InputMethodService
 import android.os.Handler
 import android.os.Looper
+import android.text.InputType
 import android.view.View
+import android.view.inputmethod.EditorInfo
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.romannepali.keyboard.suggestion.PredictionContext
@@ -99,8 +101,21 @@ class RomanNepaliIME : InputMethodService() {
 
                     "↵" -> {
                         finishCurrentWord()
-                        ic.commitText("\n", 1)
                         suggestionBar?.clearSuggestions()
+                        val editorInfo = currentInputEditorInfo
+                        val action = editorInfo.imeOptions and EditorInfo.IME_MASK_ACTION
+                        val multiline =
+                            (editorInfo.inputType and InputType.TYPE_TEXT_FLAG_MULTI_LINE) != 0
+                        val noEnterAction =
+                            (editorInfo.imeOptions and EditorInfo.IME_FLAG_NO_ENTER_ACTION) != 0
+                        if (multiline || noEnterAction ||
+                            action == EditorInfo.IME_ACTION_NONE ||
+                            action == EditorInfo.IME_ACTION_UNSPECIFIED
+                        ) {
+                            ic.commitText("\n", 1)
+                        } else {
+                            ic.performEditorAction(action)
+                        }
                     }
 
                     "⌫" -> {
@@ -250,7 +265,7 @@ class RomanNepaliIME : InputMethodService() {
         val job = ++suggestionJob
         suggestionExecutor.execute {
             val context = currentPredictionContext()
-            val suggestions = suggestionEngine.predict(context, limit = 3).map { it.word }
+            val suggestions = suggestionEngine.predict(context, limit = 7).map { it.word }
             mainHandler.post {
                 // Only apply if no newer keystroke superseded this one.
                 if (job == suggestionJob) {

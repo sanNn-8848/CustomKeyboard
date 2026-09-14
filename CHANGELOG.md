@@ -1,5 +1,18 @@
 # MeroType Changelog
 
+## [1.1.5] - 2026-09-14
+
+### Changed
+- Keys restyled: letter keys 10dp rounded rectangle, function keys pill/capsule with warm coral tint
+- Uppercase icon redesigned as a stacking chevron (filled + outline layer)
+- Enter icon redesigned as a bold wrapped return path
+- Icon centering fix for shift/enter/backspace
+- Suggestion bar is now horizontally scrollable (up to 7 suggestions, smooth swipe)
+- Enter key performs smart action (Done/Go/Send/Search in single-line fields, newline only in multi-line)
+
+### Added
+- Optional number row (off by default, toggled in Settings)
+
 ## [1.1.4] - 2026-09-14
 
 ### Added
