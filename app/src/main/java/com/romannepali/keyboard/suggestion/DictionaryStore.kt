@@ -55,9 +55,19 @@ class DictionaryStore(context: Context) {
         prefs.edit().putStringSet(KEY_SUPPRESSED, words).apply()
     }
 
+    @Synchronized
+    fun loadFavorites(): Set<String> =
+        prefs.getStringSet(KEY_FAVORITES, emptySet()) ?: emptySet()
+
+    @Synchronized
+    fun saveFavorites(words: Set<String>) {
+        prefs.edit().putStringSet(KEY_FAVORITES, words).apply()
+    }
+
     private companion object {
         const val KEY_LEARNED = "learned"
         const val KEY_SAVED = "saved"
         const val KEY_SUPPRESSED = "suppressed"
+        const val KEY_FAVORITES = "favorites"
     }
 }

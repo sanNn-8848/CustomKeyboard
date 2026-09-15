@@ -1,25 +1,29 @@
 package com.romannepali.keyboard
 
-import android.animation.ObjectAnimator
-import android.animation.ValueAnimator
 import android.content.Context
 import android.content.Intent
-import android.content.res.ColorStateList
 import android.graphics.Typeface
 import android.os.Handler
 import android.os.Looper
 import android.util.AttributeSet
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageButton
-import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.romannepali.keyboard.settings.SettingsActivity
 
+/**
+ * Prediction chips with tap-to-insert and long-press-to-edit. Long-pressing a chip
+ * hands the gesture to a [SuggestionDragOverlay] ("Suggestion Edit Mode"): the chip is
+ * grabbed by the finger and can be dropped on a magnetic REMOVE / FAVORITE zone.
+ * All gesture coordinates are RAW screen coords — the IME converts them to overlay space.
+ */
 class SuggestionBar @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
@@ -31,15 +35,34 @@ class SuggestionBar @JvmOverloads constructor(
     private var centerUndoButton: ImageButton? = null
     private var gearButton: ImageButton? = null
     private var chipsScroll: HorizontalScrollView? = null
-    private var deleteOverlay: FrameLayout? = null
-    private var deleteGlow: ImageView? = null
-    private var blinkAnimator: ObjectAnimator? = null
 
     var onSuggestionClickListener: ((String) -> Unit)? = null
-    var onDeleteSuggestionClickListener: ((String) -> Unit)? = null
     var onUndoClickListener: (() -> Unit)? = null
 
+    /** Dragged chip + the word and the raw screen coords where the touch started. */
+    var onSuggestionDragStart: ((View, String, Float, Float) -> Unit)? = null
+    var onSuggestionDragMove: ((Float, Float) -> Unit)? = null
+    var onSuggestionDragEnd: ((Float, Float) -> Unit)? = null
+
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+    private val longPressTimeout = ViewConfiguration.getLongPressTimeout().toLong()
+
+    private var pendingChip: View? = null
+    private var pendingWord = ""
+    private var lastChip: View? = null
+    private var downRawX = 0f
+    private var downRawY = 0f
+    private var dragActive = false
+
+    private val longPressRunnable = Runnable {
+        val chip = pendingChip ?: return@Runnable
+        dragActive = true
+        lastChip = chip
+        chip.visibility = View.INVISIBLE
+        chip.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
+        onSuggestionDragStart?.invoke(chip, pendingWord, downRawX, downRawY)
+    }
 
     init {
         inflate(context, R.layout.suggestion_bar, this)
@@ -48,8 +71,6 @@ class SuggestionBar @JvmOverloads constructor(
         undoButton = findViewById(R.id.clock_tap_undo)
         centerUndoButton = findViewById(R.id.undo_center)
         gearButton = findViewById(R.id.settings_gear)
-
-        buildDeleteOverlay()
 
         gearButton?.setOnClickListener {
             val intent = Intent(context, SettingsActivity::class.java)
@@ -64,99 +85,67 @@ class SuggestionBar @JvmOverloads constructor(
         }
     }
 
-    private fun buildDeleteOverlay() {
-        val overlay = FrameLayout(context).apply {
-            layoutParams = FrameLayout.LayoutParams(
-                LayoutParams.WRAP_CONTENT,
-                LayoutParams.WRAP_CONTENT,
-                Gravity.CENTER
-            )
-        }
-
-        val pill = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            background = resources.getDrawable(R.drawable.bg_delete_glow, null)
-            setPadding(dp(14), dp(6), dp(18), dp(6))
-        }
-
-        val glow = ImageView(context).apply {
-            background = resources.getDrawable(R.drawable.bg_delete_glow, null)
-            contentDescription = null
-            visibility = GONE
-            layoutParams = FrameLayout.LayoutParams(
-                dp(44),
-                dp(44),
-                Gravity.CENTER
-            )
-        }
-        overlay.addView(glow)
-
-        val trash = ImageButton(context).apply {
-            background = null
-            setImageResource(R.drawable.ic_trash)
-            imageTintList = ColorStateList.valueOf(resources.getColor(R.color.accent, null))
-            contentDescription = resources.getString(R.string.delete_suggestion)
-            val counterLp = FrameLayout.LayoutParams(dp(30), dp(30), Gravity.CENTER)
-            layoutParams = counterLp
-            setOnClickListener {
-                val word = tag as? String
-                stopDeleteBlink()
-                overlay.visibility = GONE
-                if (word != null) {
-                    onDeleteSuggestionClickListener?.invoke(word)
-                }
-            }
-        }
-        overlay.addView(trash)
-
-        val label = TextView(context).apply {
-            text = resources.getString(R.string.delete_suggestion)
-            setTextColor(resources.getColor(R.color.accent_soft, null))
-            textSize = 13f
-            isSingleLine = true
-            setPadding(dp(6), 0, 0, 0)
-        }
-        pill.addView(label)
-        overlay.addView(pill)
-
-        overlay.visibility = GONE
-        addView(overlay)
-        deleteOverlay = overlay
-        deleteGlow = glow
-    }
-
-    private fun showDeleteOverlay(word: String) {
-        val overlay = deleteOverlay ?: return
-        overlay.tag = word
-        overlay.visibility = VISIBLE
-        startDeleteBlink()
-        mainHandler.removeCallbacksAndMessages(null)
-        mainHandler.postDelayed({
-            overlay.visibility = GONE
-            stopDeleteBlink()
-        }, 3000)
-    }
-
-    private fun startDeleteBlink() {
-        val glow = deleteGlow ?: return
-        stopDeleteBlink()
-        glow.visibility = VISIBLE
-        blinkAnimator = ObjectAnimator.ofFloat(glow, View.ALPHA, 0.35f, 1f).apply {
-            duration = 700
-            repeatCount = ValueAnimator.INFINITE
-            repeatMode = ValueAnimator.REVERSE
-            start()
-        }
-    }
-
-    private fun stopDeleteBlink() {
-        blinkAnimator?.cancel()
-        blinkAnimator = null
-        deleteGlow?.let {
-            it.visibility = GONE
+    /**
+     * Restores the chip that was grabbed once the drag overlay has finished playing
+     * (after the drop burst or the fly-back animation) so nothing is left invisible.
+     */
+    fun restoreChip() {
+        lastChip?.let {
+            it.visibility = View.VISIBLE
             it.alpha = 1f
         }
+        lastChip = null
+    }
+
+    private fun movedBeyondSlop(rawX: Float, rawY: Float): Boolean {
+        val dx = rawX - downRawX
+        val dy = rawY - downRawY
+        return dx * dx + dy * dy > touchSlop * touchSlop
+    }
+
+    private fun onChipTouch(view: View, word: String, event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                pendingChip = view
+                pendingWord = word
+                downRawX = event.rawX
+                downRawY = event.rawY
+                dragActive = false
+                mainHandler.removeCallbacks(longPressRunnable)
+                mainHandler.postDelayed(longPressRunnable, longPressTimeout)
+            }
+
+            MotionEvent.ACTION_MOVE -> {
+                if (dragActive) {
+                    onSuggestionDragMove?.invoke(event.rawX, event.rawY)
+                } else if (movedBeyondSlop(event.rawX, event.rawY)) {
+                    mainHandler.removeCallbacks(longPressRunnable)
+                }
+            }
+
+            MotionEvent.ACTION_UP -> {
+                mainHandler.removeCallbacks(longPressRunnable)
+                if (dragActive) {
+                    dragActive = false
+                    pendingChip = null
+                    onSuggestionDragEnd?.invoke(event.rawX, event.rawY)
+                } else if (!movedBeyondSlop(event.rawX, event.rawY)) {
+                    onSuggestionClickListener?.invoke(word)
+                }
+                pendingWord = ""
+            }
+
+            MotionEvent.ACTION_CANCEL -> {
+                mainHandler.removeCallbacks(longPressRunnable)
+                if (dragActive) {
+                    dragActive = false
+                    pendingChip = null
+                    onSuggestionDragEnd?.invoke(event.rawX, event.rawY)
+                }
+                pendingWord = ""
+            }
+        }
+        return true
     }
 
     fun showSuggestions(suggestions: List<String>) {
@@ -183,28 +172,20 @@ class SuggestionBar @JvmOverloads constructor(
                         marginStart = dp(2)
                         marginEnd = dp(2)
                     }
-                    setOnClickListener { onSuggestionClickListener?.invoke(text.toString()) }
-                    setOnLongClickListener {
-                        showDeleteOverlay(text.toString())
-                        true
-                    }
+                    val chipText = text.toString()
+                    setOnTouchListener { view, event -> onChipTouch(view, chipText, event) }
                     container.addView(this, lp)
                 }
             }
             chipsScroll?.scrollTo(0, 0)
         }
-        deleteOverlay?.let { overlay ->
-            overlay.visibility = GONE
-            stopDeleteBlink()
-        }
     }
 
     fun clearSuggestions() {
         chipsContainer?.removeAllViews()
-        deleteOverlay?.let { overlay ->
-            overlay.visibility = GONE
-            stopDeleteBlink()
-        }
+        mainHandler.removeCallbacks(longPressRunnable)
+        pendingChip = null
+        restoreChip()
     }
 
     fun setUndoState(available: Boolean, centered: Boolean) {
@@ -232,7 +213,7 @@ class SuggestionBar @JvmOverloads constructor(
         val selected = if (dark) R.drawable.bg_suggestion_chip_dark_selected else R.drawable.bg_suggestion_chip_light_selected
         val textRes = if (dark) R.color.letter_text_dark else R.color.letter_text_light
         val icon = resources.getColor(if (dark) R.color.icon_dark else R.color.icon_light, null)
-        val tint = ColorStateList.valueOf(icon)
+        val tint = android.content.res.ColorStateList.valueOf(icon)
 
         chipsContainer?.let { container ->
             for (i in 0 until container.childCount) {
