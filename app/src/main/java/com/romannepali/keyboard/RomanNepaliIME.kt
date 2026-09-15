@@ -1,6 +1,7 @@
 package com.romannepali.keyboard
 
 import android.content.res.Configuration
+import android.graphics.Rect
 import android.inputmethodservice.InputMethodService
 import android.os.Handler
 import android.os.Looper
@@ -22,6 +23,7 @@ class RomanNepaliIME : InputMethodService() {
 
     private var keyboardView: GboardKeyboardView? = null
     private var suggestionBar: SuggestionBar? = null
+    private var dragOverlay: SuggestionDragOverlay? = null
     private var featureCarousel: FeatureCarouselView? = null
     private var featurePane: android.widget.FrameLayout? = null
     private var clipboardPane: ClipboardPane? = null
@@ -128,6 +130,18 @@ class RomanNepaliIME : InputMethodService() {
         featurePane = view.findViewById(R.id.feature_pane)
         mainView = view
 
+        // Full-bleed "Suggestion Edit Mode" overlay, drawn above everything.
+        val root = view as? android.widget.FrameLayout
+        dragOverlay = SuggestionDragOverlay(this).apply {
+            layoutParams = android.widget.FrameLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            visibility = View.INVISIBLE
+            isClickable = false
+        }
+        root?.addView(dragOverlay)
+
         // Build clipboard + emoji panes programmatically so they share the same parent.
         clipboardPane = ClipboardPane(this).apply { visibility = View.GONE }
         emojiPane = EmojiPane(this).apply { visibility = View.GONE }
@@ -163,17 +177,41 @@ class RomanNepaliIME : InputMethodService() {
             applySuggestion(suggestion)
         }
 
-        suggestionBar?.onDeleteSuggestionClickListener = { word ->
-            // Suppress instead of destroy: keeps learned history, reversible via undo.
-            suggestionEngine.suppress(word)
-            lastSuppressedWord = word
-            Toast.makeText(
-                this,
-                getString(R.string.word_removed_confirmed, word),
-                Toast.LENGTH_SHORT
-            ).show()
-            updateSuggestions()
-            updateUndoUi()
+        // "Suggestion Edit Mode": long-press a chip and drop it on a magnetic zone.
+        val overlay = dragOverlay
+        if (overlay != null) {
+            overlay.onRemoveRequested = { word -> suppressSuggestion(word) }
+            overlay.onFavoriteRequested = { word -> favoriteSuggestion(word) }
+            overlay.onDragFinished = { suggestionBar?.restoreChip() }
+
+            suggestionBar?.onSuggestionDragStart = { chip, word, rawX, rawY ->
+                overlay.endCurrentDragIfAny()
+                val overlayOrigin = IntArray(2)
+                overlay.getLocationOnScreen(overlayOrigin)
+                val chipLoc = IntArray(2)
+                chip.getLocationOnScreen(chipLoc)
+                overlay.beginDrag(
+                    word,
+                    Rect(
+                        chipLoc[0] - overlayOrigin[0],
+                        chipLoc[1] - overlayOrigin[1],
+                        chipLoc[0] - overlayOrigin[0] + chip.width,
+                        chipLoc[1] - overlayOrigin[1] + chip.height
+                    ),
+                    rawX - overlayOrigin[0],
+                    rawY - overlayOrigin[1]
+                )
+            }
+            suggestionBar?.onSuggestionDragMove = { rawX, rawY ->
+                val origin = IntArray(2)
+                overlay.getLocationOnScreen(origin)
+                overlay.updateFinger(rawX - origin[0], rawY - origin[1])
+            }
+            suggestionBar?.onSuggestionDragEnd = { rawX, rawY ->
+                val origin = IntArray(2)
+                overlay.getLocationOnScreen(origin)
+                overlay.finishDrag(rawX - origin[0], rawY - origin[1])
+            }
         }
 
         suggestionBar?.onUndoClickListener = {
@@ -416,6 +454,30 @@ class RomanNepaliIME : InputMethodService() {
 
         currentWord.clear()
         suggestionBar?.clearSuggestions()
+    }
+
+    /** Drop on REMOVE: suppress the word (reversible via undo). */
+    private fun suppressSuggestion(word: String) {
+        suggestionEngine.suppress(word)
+        lastSuppressedWord = word
+        Toast.makeText(
+            this,
+            getString(R.string.word_removed_confirmed, word),
+            Toast.LENGTH_SHORT
+        ).show()
+        updateSuggestions()
+        updateUndoUi()
+    }
+
+    /** Drop on FAVORITE: boost the word so it surfaces near the top. */
+    private fun favoriteSuggestion(word: String) {
+        suggestionEngine.favorite(word)
+        Toast.makeText(
+            this,
+            getString(R.string.word_favorited_confirmed, word),
+            Toast.LENGTH_SHORT
+        ).show()
+        updateSuggestions()
     }
 
     private fun undoDelete() {

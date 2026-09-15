@@ -120,6 +120,39 @@ class SuggestionEngineTest {
     }
 
     @Test
+    fun favorites_areListedAndClearable() {
+        engine.favorite("namaste")
+        engine.favorite("kathmandu")
+        assertTrue(engine.getFavorites().contains("namaste"))
+        engine.unfavorite("namaste")
+        assertFalse(engine.getFavorites().contains("namaste"))
+        assertTrue(engine.isFavorite("kathmandu"))
+        engine.clearFavorites()
+        assertTrue(engine.getFavorites().isEmpty())
+    }
+
+    @Test
+    fun favorites_persistAcrossInstances() {
+        engine.favorite("kathmandu")
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val fresh = SuggestionEngine(context)
+        try {
+            assertTrue("favorite lost on reload", fresh.isFavorite("kathmandu"))
+        } finally {
+            fresh.clearFavorites()
+        }
+    }
+
+    @Test
+    fun favoritedWords_stillFlowThroughPredictions() {
+        engine.learnWord("bhatindaun")
+        engine.favorite("bhatindaun")
+        val words = engine.predict(PredictionContext("bhat"), limit = 5).map { it.word }
+        assertTrue("favorite not suggested: $words", words.contains("bhatindaun"))
+        engine.clearFavorites()
+    }
+
+    @Test
     fun knownPrefix_doesNotGetFloodedByCharModelFills() {
         // "na" has many real dictionary matches; junk char-model words must not swamp it.
         val results = engine.predict(PredictionContext("na"), limit = 7)
