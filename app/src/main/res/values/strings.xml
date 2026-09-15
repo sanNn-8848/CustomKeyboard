@@ -43,10 +43,6 @@
     <string name="clear_learned_confirmed">Cleared learned words</string>
     <string name="clear_clipboard_confirmed">Cleared clipboard</string>
     <string name="word_removed_confirmed">Removed \u201c%1$s\u201d</string>
-    <string name="word_favorited_confirmed">Added %1$s to favorites</string>
-    <string name="suggestion_remove_zone">REMOVE</string>
-    <string name="suggestion_favorite_zone">FAVORITE</string>
-    <string name="suggestion_drag_hint">Long-press a suggestion, then drag it to a zone</string>
     <string name="word_restored_confirmed">Restored \u201c%1$s\u201d</string>
     <string name="clip_removed_confirmed">Removed clip</string>
     <string name="undo">Undo</string>

@@ -40,7 +40,6 @@ class SuggestionEngine(private val context: android.content.Context) {
 
     private val learnedWords = HashMap<String, Int>()
     private val suppressedWords = store.loadSuppressed().toMutableSet()
-    private val favoriteWords = store.loadFavorites().toMutableSet()
 
     private val scoreCache = HashMap<String, Double>()
     private var knownWordsCache: List<String>? = null
@@ -162,17 +161,6 @@ class SuggestionEngine(private val context: android.content.Context) {
                 )
             }
             .sortedByDescending { it.score }
-
-        // 2b. Favorites ride the magnetic rail: boost so they clear equal peers.
-        if (favoriteWords.isNotEmpty()) {
-            results = results
-                .map {
-                    if (it.word.lowercase() in favoriteWords)
-                        it.copy(score = it.score + FAVORITE_BOOST)
-                    else it
-                }
-                .sortedByDescending { it.score }
-        }
 
         // 3. Fill remaining slots: split/merge, then character model, then emoji.
         // Fills are last-resort tiers. When real candidates already exist, the
@@ -401,31 +389,6 @@ class SuggestionEngine(private val context: android.content.Context) {
     fun clearSuppressedWords() {
         suppressedWords.clear()
         store.saveSuppressed(suppressedWords)
-    }
-
-    /** Boosts a word so it surfaces near the top of suggestions. */
-    fun favorite(word: String) {
-        if (favoriteWords.add(word.lowercase())) {
-            store.saveFavorites(favoriteWords)
-            scoreCache.clear()
-        }
-    }
-
-    fun unfavorite(word: String) {
-        if (favoriteWords.remove(word.lowercase())) {
-            store.saveFavorites(favoriteWords)
-            scoreCache.clear()
-        }
-    }
-
-    fun isFavorite(word: String): Boolean = word.lowercase() in favoriteWords
-
-    fun getFavorites(): List<String> = favoriteWords.toList().sorted()
-
-    fun clearFavorites() {
-        favoriteWords.clear()
-        store.saveFavorites(favoriteWords)
-        scoreCache.clear()
     }
 
     fun getLearnedWords(): List<Pair<String, Int>> =
@@ -699,9 +662,6 @@ class SuggestionEngine(private val context: android.content.Context) {
         const val SPLIT_SCORE = 0.75f
         const val CHAR_SCORE = 0.45f
         const val EMOJI_SCORE = 0.25f
-
-        /** Extra score added to favorites so they rank ahead of equal peers. */
-        const val FAVORITE_BOOST = 0.6f
 
         /** Common Nepali grammatical suffixes used by the no-space splitter. */
         val KNOWN_SUFFIXES = setOf(

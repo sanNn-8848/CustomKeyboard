@@ -1,18 +1,5 @@
 # MeroType Changelog
 
-## [1.1.11] - 2026-09-15
-
-### Added
-- Futuristic "Suggestion Edit Mode": long-press a suggestion chip and it is grabbed by your finger
-  - Two invisible magnetic drop zones appear (REMOVE / FAVORITE) while the keyboard dims
-  - The dragged chip follows your finger with a soft magnetic pull toward the nearest zone
-  - Zone halos, colors and icons react continuously to distance (red glow = remove, gold glow = favorite)
-  - Proportional haptics: drag start, entering magnetism, entering the drop zone, and confirm
-  - Drop zones expand ~20% as you near them; releasing inside performs the action
-  - Releasing anywhere else flies the chip smoothly back to its original place
-- Favorites: dropping a suggestion on FAVORITE marks it, giving it a persistent boost in suggestions
-- Replaced the old static trash delete overlay with the drag-to-REMOVE interaction
-
 ## [1.1.10] - 2026-09-15
 
 ### Fixed
