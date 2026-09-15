@@ -1,5 +1,14 @@
 # MeroType Changelog
 
+## [1.1.9] - 2026-09-14
+
+### Added
+- Magnetic Feature Carousel: a slim swipeable strip above the suggestions with spring-snap physics, momentum fling, haptic ticks and center magnification
+- Three one-tap features: Suggestions (default), Clipboard, and Emoji
+- Clipboard pane shows your most recent saved clips; tap to paste directly
+- Emoji pane has quick-access emoji right on the keyboard; tap to insert
+- Committed words are automatically added to your clipboard history
+
 ## [1.1.8] - 2026-09-14
 
 ### Fixed

@@ -5,7 +5,6 @@
     android:layout_height="wrap_content"
     android:background="@drawable/bg_keyboard_container_dark">
 
-    <!-- Static soft glow behind everything -->
     <android.widget.ImageView
         android:id="@+id/frost_glow"
         android:layout_width="match_parent"
@@ -13,7 +12,6 @@
         android:src="@drawable/bg_glow_dark"
         android:contentDescription="@null" />
 
-    <!-- Barely-visible Himalayan silhouette -->
     <android.widget.ImageView
         android:id="@+id/frost_mountains"
         android:layout_width="match_parent"
@@ -23,15 +21,21 @@
         android:src="@drawable/bg_mountains_dark"
         android:contentDescription="@null" />
 
-    <!-- Content sits on top of the glass -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical">
 
-        <!-- Suggestion Toolbar -->
+        <!-- Feature Carousel Strip -->
+        <com.romannepali.keyboard.FeatureCarouselView
+            android:id="@+id/feature_carousel"
+            android:layout_width="match_parent"
+            android:layout_height="38dp"
+            android:background="@drawable/bg_prediction_bar" />
+
+        <!-- Feature Content Pane (suggestions / clipboard / emoji) -->
         <FrameLayout
-            android:id="@+id/suggestion_row"
+            android:id="@+id/feature_pane"
             android:layout_width="match_parent"
             android:layout_height="48dp"
             android:background="@drawable/bg_prediction_bar">

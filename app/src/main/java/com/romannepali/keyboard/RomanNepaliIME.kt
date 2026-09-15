@@ -10,6 +10,9 @@ import android.view.inputmethod.EditorInfo
 import android.widget.Toast
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import com.romannepali.keyboard.clipboard.ClipboardManager
+import com.romannepali.keyboard.clipboard.ClipboardPane
+import com.romannepali.keyboard.emoji.EmojiPane
 import com.romannepali.keyboard.suggestion.PredictionContext
 import com.romannepali.keyboard.suggestion.SuggestionEngine
 import java.util.concurrent.ExecutorService
@@ -19,15 +22,22 @@ class RomanNepaliIME : InputMethodService() {
 
     private var keyboardView: GboardKeyboardView? = null
     private var suggestionBar: SuggestionBar? = null
+    private var featureCarousel: FeatureCarouselView? = null
+    private var featurePane: android.widget.FrameLayout? = null
+    private var clipboardPane: ClipboardPane? = null
+    private var emojiPane: EmojiPane? = null
     private var mainView: View? = null
 
     private lateinit var suggestionEngine: SuggestionEngine
+    private lateinit var clipboardManager: ClipboardManager
     private val currentWord = StringBuilder()
 
     // Deleted text remembered for the undo arrow.
     private var deletedText: String? = null
     // Last suppressed word for the undo arrow (reversible without destroying history).
     private var lastSuppressedWord: String? = null
+    // Active feature pane index: 0=suggestions, 1=clipboard, 2=emoji.
+    private var currentMode = 0
 
     // Last finished words (most recent last) fed back into prediction.
     private val contextWords = mutableListOf<String>()
@@ -44,6 +54,7 @@ class RomanNepaliIME : InputMethodService() {
         super.onCreate()
 
         suggestionEngine = SuggestionEngine(this)
+        clipboardManager = ClipboardManager(this)
 
         updateFullscreenMode()
     }
@@ -64,7 +75,31 @@ class RomanNepaliIME : InputMethodService() {
 
         keyboardView = view.findViewById(R.id.keyboard_view)
         suggestionBar = view.findViewById(R.id.suggestion_bar)
+        featureCarousel = view.findViewById(R.id.feature_carousel)
+        featurePane = view.findViewById(R.id.feature_pane)
         mainView = view
+
+        // Build clipboard + emoji panes programmatically so they share the same parent.
+        clipboardPane = ClipboardPane(this).apply { visibility = View.GONE }
+        emojiPane = EmojiPane(this).apply { visibility = View.GONE }
+        featurePane?.addView(clipboardPane)
+        featurePane?.addView(emojiPane)
+
+        featureCarousel?.items = listOf(
+            FeatureItem("Suggestions", "\uD83D\uDCAC"),
+            FeatureItem("Clipboard", "\uD83D\uDCCB"),
+            FeatureItem("Emoji", "\uD83D\uDE00")
+        )
+        featureCarousel?.onItemSelected = { index ->
+            currentMode = index
+            suggestionBar?.visibility = if (index == 0) View.VISIBLE else View.GONE
+            clipboardPane?.visibility = if (index == 1) View.VISIBLE else View.GONE
+            emojiPane?.visibility = if (index == 2) View.VISIBLE else View.GONE
+            when (index) {
+                1 -> refreshClipboardPane()
+                2 -> refreshEmojiPane()
+            }
+        }
 
         applyKeyboardTheme()
 
@@ -243,6 +278,7 @@ class RomanNepaliIME : InputMethodService() {
         suggestionEngine.learnWord(committed)
         suggestionEngine.updateContext(committed)
         pushContext(committed)
+        clipboardManager.copy(committed)
         currentWord.clear()
     }
 
@@ -270,6 +306,20 @@ class RomanNepaliIME : InputMethodService() {
         sentenceStart = isSentenceStart(),
         cursorPosition = currentWord.length
     )
+
+    private fun refreshClipboardPane() {
+        val dark = Prefs.darkTheme(this)
+        clipboardPane?.bind(clipboardManager, dark) { text ->
+            currentInputConnection?.commitText(text, 1)
+        }
+    }
+
+    private fun refreshEmojiPane() {
+        val dark = Prefs.darkTheme(this)
+        emojiPane?.bind(dark) { emoji ->
+            currentInputConnection?.commitText(emoji, 1)
+        }
+    }
 
     private fun updateSuggestions() {
         if (!Prefs.suggestions(this)) {
@@ -310,6 +360,7 @@ class RomanNepaliIME : InputMethodService() {
             suggestionEngine.learnWord(word)
             suggestionEngine.updateContext(word)
             pushContext(word)
+            clipboardManager.copy(word)
         }
 
         currentWord.clear()
