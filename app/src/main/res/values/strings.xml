@@ -29,6 +29,8 @@
     <string name="clear_learned">Clear learned</string>
     <string name="no_saved_words">No saved words yet.</string>
     <string name="no_learned_words">No learned words yet.</string>
+    <string name="suppressed_words">Suppressed words</string>
+    <string name="no_suppressed_words">No suppressed words yet.</string>
     <string name="empty_word">Enter a word first.</string>
     <string name="word_invalid">Letters and spaces only.</string>
     <string name="word_added">Added \u201c%1$s\u201d</string>
@@ -41,6 +43,7 @@
     <string name="clear_learned_confirmed">Cleared learned words</string>
     <string name="clear_clipboard_confirmed">Cleared clipboard</string>
     <string name="word_removed_confirmed">Removed \u201c%1$s\u201d</string>
+    <string name="word_restored_confirmed">Restored \u201c%1$s\u201d</string>
     <string name="clip_removed_confirmed">Removed clip</string>
     <string name="undo">Undo</string>
 

@@ -94,6 +94,40 @@ class SuggestionEngineTest {
     }
 
     @Test
+    fun suppressedWord_isHiddenFromSuggestions() {
+        engine.learnWord("bhatindaun")
+        val before = engine.predict(PredictionContext("bhat"), limit = 5).map { it.word }
+        assertTrue(before.contains("bhatindaun"))
+
+        engine.suppress("bhatindaun")
+        val after = engine.predict(PredictionContext("bhat"), limit = 5).map { it.word }
+        assertFalse("suppressed word still suggested: $after", after.contains("bhatindaun"))
+
+        engine.unsuppress("bhatindaun")
+        val restored = engine.predict(PredictionContext("bhat"), limit = 5).map { it.word }
+        assertTrue("undo did not restore word: $restored", restored.contains("bhatindaun"))
+    }
+
+    @Test
+    fun suppressedWords_areListedAndClearable() {
+        engine.suppress("namaste")
+        engine.suppress("namaskar")
+        assertTrue(engine.getSuppressedWords().contains("namaste"))
+        engine.clearSuppressedWords()
+        assertTrue(engine.getSuppressedWords().isEmpty())
+        engine.unsuppress("namaste")
+        assertTrue(engine.getSuppressedWords().isEmpty())
+    }
+
+    @Test
+    fun knownPrefix_doesNotGetFloodedByCharModelFills() {
+        // "na" has many real dictionary matches; junk char-model words must not swamp it.
+        val results = engine.predict(PredictionContext("na"), limit = 7)
+        val charFills = results.count { it.source == CandidateSource.CHAR_MODEL }
+        assertTrue("too many char-model fills: $charFills for ${results.map { it.word }}", charFills <= 1)
+    }
+
+    @Test
     fun predictionLatency_isReasonable() {
         val iterations = 3000
         val durations = LongArray(iterations)

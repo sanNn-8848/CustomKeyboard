@@ -39,6 +39,7 @@ class SuggestionEngine(private val context: android.content.Context) {
     private val store = DictionaryStore(context)
 
     private val learnedWords = HashMap<String, Int>()
+    private val suppressedWords = store.loadSuppressed().toMutableSet()
 
     private val scoreCache = HashMap<String, Double>()
     private var knownWordsCache: List<String>? = null
@@ -162,6 +163,20 @@ class SuggestionEngine(private val context: android.content.Context) {
             .sortedByDescending { it.score }
 
         // 3. Fill remaining slots: split/merge, then character model, then emoji.
+        // Fills are last-resort tiers. When real candidates already exist, the
+        // character-model (which can fabricate non-words like "lageet") is heavily
+        // capped so it never floods the suggestion bar.
+        val realCount = results.count {
+            it.source != CandidateSource.CHAR_MODEL &&
+                it.source != CandidateSource.EMOJI &&
+                it.source != CandidateSource.SPLIT_MERGE
+        }
+        val maxCharFills = when {
+            realCount >= 5 -> 0
+            realCount >= 3 -> 1
+            else -> 2
+        }
+
         val taken = results.map { it.word }.toMutableSet()
         val room = { limit - taken.size }
 
@@ -189,14 +204,14 @@ class SuggestionEngine(private val context: android.content.Context) {
                 }
         }
 
-        if (room() > 0) {
+        if (room() > 0 && maxCharFills > 0) {
             charModel.generate(
                 prefixInput = input,
                 maxResults = 20,
                 minLength = maxOf(3, input.length),
                 maxLength = 15
             ).filter { it !in taken }
-                .take(room())
+                .take(minOf(room(), maxCharFills))
                 .forEach {
                     taken.add(it)
                     results = results.toMutableList().apply {
@@ -206,7 +221,8 @@ class SuggestionEngine(private val context: android.content.Context) {
         }
 
         // 4. Confidence from the top-2 spread; decays down the list.
-        val ranked = results.take(limit)
+        val filtered = results.filter { it.word !in suppressedWords }
+        val ranked = filtered.take(limit)
         if (ranked.isEmpty()) return emptyList()
         return withConfidence(ranked)
     }
@@ -353,6 +369,27 @@ class SuggestionEngine(private val context: android.content.Context) {
     }
 
     fun getSavedWords(): List<String> = store.loadSaved()
+
+    /** Hides a word from future suggestions without erasing its learned history. */
+    fun suppress(word: String) {
+        if (suppressedWords.add(word.lowercase())) {
+            store.saveSuppressed(suppressedWords)
+        }
+    }
+
+    /** Re-enables a previously suppressed word (used by undo and settings). */
+    fun unsuppress(word: String) {
+        if (suppressedWords.remove(word.lowercase())) {
+            store.saveSuppressed(suppressedWords)
+        }
+    }
+
+    fun getSuppressedWords(): List<String> = suppressedWords.toList().sorted()
+
+    fun clearSuppressedWords() {
+        suppressedWords.clear()
+        store.saveSuppressed(suppressedWords)
+    }
 
     fun getLearnedWords(): List<Pair<String, Int>> =
         learnedWords.entries.map { it.key to it.value }

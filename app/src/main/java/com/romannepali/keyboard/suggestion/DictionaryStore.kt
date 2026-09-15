@@ -3,9 +3,10 @@ package com.romannepali.keyboard.suggestion
 import android.content.Context
 
 /**
- * Persistent storage for the two user-dictionary buckets:
+ * Persistent storage for the three user-dictionary buckets:
  *  - learned words (auto-typed, with use counts)
  *  - saved words (user's personal dictionary, never wiped by "clear learned")
+ *  - suppressed words (user explicitly hides from suggestions, reversible via undo)
  */
 class DictionaryStore(context: Context) {
 
@@ -45,8 +46,18 @@ class DictionaryStore(context: Context) {
         prefs.edit().putStringSet(KEY_SAVED, words.toSet()).apply()
     }
 
+    @Synchronized
+    fun loadSuppressed(): Set<String> =
+        prefs.getStringSet(KEY_SUPPRESSED, emptySet()) ?: emptySet()
+
+    @Synchronized
+    fun saveSuppressed(words: Set<String>) {
+        prefs.edit().putStringSet(KEY_SUPPRESSED, words).apply()
+    }
+
     private companion object {
         const val KEY_LEARNED = "learned"
         const val KEY_SAVED = "saved"
+        const val KEY_SUPPRESSED = "suppressed"
     }
 }

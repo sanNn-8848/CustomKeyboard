@@ -1,5 +1,23 @@
 # MeroType Changelog
 
+## [1.1.8] - 2026-09-14
+
+### Fixed
+- Backspace after a committed word no longer pollutes predictions: re-typing the same word shows the same suggestions again
+- Suggestions no longer filled with meaningless generated words — character-model fills are capped when real matches already exist (e.g. typing "lage" no longer offers "lageet"/"longe")
+
+### Added
+- Suggestion management (suppression model): long-press a suggestion → tap the remove trash to hide it from future suggestions without losing your typing history
+- Removing a suggestion is now reversible — the undo arrow restores it instantly
+- Suppressed words are listed in Settings and can be restored or re-hidden individually
+
+## [1.1.7] - 2026-09-14
+
+### Changed
+- Slimmer keyboard: letter keys ~48dp visible, number keys ~44dp (Gboard proportions), 2dp gaps
+- Number row no longer stretches the keyboard taller than needed
+- Landscape now scales rows down so the keyboard stays balanced and under ~55% of screen height
+
 ## [1.1.6] - 2026-09-14
 
 ### Fixed

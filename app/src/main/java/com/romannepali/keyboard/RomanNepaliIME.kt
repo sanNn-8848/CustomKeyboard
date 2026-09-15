@@ -7,6 +7,7 @@ import android.os.Looper
 import android.text.InputType
 import android.view.View
 import android.view.inputmethod.EditorInfo
+import android.widget.Toast
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.romannepali.keyboard.suggestion.PredictionContext
@@ -25,6 +26,8 @@ class RomanNepaliIME : InputMethodService() {
 
     // Deleted text remembered for the undo arrow.
     private var deletedText: String? = null
+    // Last suppressed word for the undo arrow (reversible without destroying history).
+    private var lastSuppressedWord: String? = null
 
     // Last finished words (most recent last) fed back into prediction.
     private val contextWords = mutableListOf<String>()
@@ -77,9 +80,16 @@ class RomanNepaliIME : InputMethodService() {
         }
 
         suggestionBar?.onDeleteSuggestionClickListener = { word ->
-            suggestionEngine.removeLearnedWord(word)
-            suggestionEngine.removePersonalWord(word)
+            // Suppress instead of destroy: keeps learned history, reversible via undo.
+            suggestionEngine.suppress(word)
+            lastSuppressedWord = word
+            Toast.makeText(
+                this,
+                getString(R.string.word_removed_confirmed, word),
+                Toast.LENGTH_SHORT
+            ).show()
             updateSuggestions()
+            updateUndoUi()
         }
 
         suggestionBar?.onUndoClickListener = {
@@ -133,7 +143,12 @@ class RomanNepaliIME : InputMethodService() {
                             currentWord.deleteCharAt(currentWord.length - 1)
                             updateSuggestions()
                         } else {
-                            suggestionBar?.clearSuggestions()
+                            // Backspace past a committed word: undo the context push
+                            // so re-typing the same word gets fresh predictions.
+                            if (deleted == " " && contextWords.isNotEmpty()) {
+                                contextWords.removeAt(contextWords.lastIndex)
+                            }
+                            updateSuggestions()
                         }
 
                         ic.deleteSurroundingText(1, 0)
@@ -303,6 +318,18 @@ class RomanNepaliIME : InputMethodService() {
 
     private fun undoDelete() {
         val ic = currentInputConnection ?: return
+
+        // Suggestion suppression undo — re-enable the hidden word and refresh.
+        val suppressed = lastSuppressedWord
+        if (suppressed != null) {
+            suggestionEngine.unsuppress(suppressed)
+            lastSuppressedWord = null
+            updateSuggestions()
+            updateUndoUi()
+            return
+        }
+
+        // Text-delete undo.
         val restored = deletedText ?: return
 
         ic.commitText(restored, 1)
@@ -320,7 +347,9 @@ class RomanNepaliIME : InputMethodService() {
     }
 
     private fun updateUndoUi() {
-        val available = deletedText?.isNotEmpty() == true
+        val textAvailable = deletedText?.isNotEmpty() == true
+        val suppressAvailable = lastSuppressedWord != null
+        val available = textAvailable || suppressAvailable
         val centered = available && currentWord.isEmpty()
         suggestionBar?.setUndoState(available, centered)
     }
@@ -345,6 +374,7 @@ class RomanNepaliIME : InputMethodService() {
         currentWord.clear()
         contextWords.clear()
         deletedText = null
+        lastSuppressedWord = null
         suggestionBar?.clearSuggestions()
         updateUndoUi()
         keyboardView?.applyThemeIfChanged()

@@ -2,6 +2,7 @@ package com.romannepali.keyboard
 
 import android.content.Context
 import android.content.res.ColorStateList
+import android.content.res.Configuration
 import android.graphics.Rect
 import android.util.AttributeSet
 import android.view.Gravity
@@ -77,6 +78,9 @@ class GboardKeyboardView @JvmOverloads constructor(
     // Remember letter keys so we can re-render upper/lower case without a full rebuild.
     private val letterButtons = mutableListOf<Pair<Button, String>>()
 
+    // Number row sits slightly shorter than letter rows (Gboard style).
+    private val NUMBER_ROW_WEIGHT = 0.92f
+
     var isShifted = false
         private set
 
@@ -109,7 +113,7 @@ class GboardKeyboardView @JvmOverloads constructor(
                 layoutParams = LayoutParams(
                     LayoutParams.MATCH_PARENT,
                     0,
-                    1f
+                    NUMBER_ROW_WEIGHT
                 )
             }
             "1234567890".forEach { c ->
@@ -151,8 +155,15 @@ class GboardKeyboardView @JvmOverloads constructor(
         }
     }
 
-    private fun keyboardHeightPx(): Int =
-        if (numberRowEnabled && !isSymbols) dp(300) else dp(240)
+    private fun keyboardHeightPx(): Int {
+        val landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        // Letters ~50dp outer (48dp visible) in portrait, ~40dp in landscape so the
+        // keyboard never eats more than ~55% of the screen in either orientation.
+        val letterRow = if (landscape) dp(40) else dp(50)
+        val withNumber = numberRowEnabled && !isSymbols
+        val totalWeight = 4f + if (withNumber) NUMBER_ROW_WEIGHT else 0f
+        return (letterRow * totalWeight).toInt()
+    }
 
     private fun addEntry(row: LinearLayout, entry: KeyDef) {
         when (entry.label) {
@@ -228,7 +239,7 @@ class GboardKeyboardView @JvmOverloads constructor(
             LayoutParams.MATCH_PARENT,
             weight
         ).apply {
-            setMargins(3, 3, 3, 3)
+            setMargins(1, 1, 1, 1)
         }
         row.addView(key)
         return key
@@ -363,7 +374,7 @@ class GboardKeyboardView @JvmOverloads constructor(
             LayoutParams.MATCH_PARENT,
             weight
         ).apply {
-            setMargins(3, 3, 3, 3)
+            setMargins(1, 1, 1, 1)
         }
         key.setOnClickListener {
             if (Prefs.vibration(context)) {

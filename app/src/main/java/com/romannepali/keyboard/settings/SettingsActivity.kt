@@ -166,6 +166,21 @@ class SettingsActivity : AppCompatActivity() {
                 }
             }
         )
+
+        renderRows(
+            R.id.suppressed_list,
+            R.id.suppressed_empty,
+            engine.getSuppressedWords().map { word ->
+                Triple(word, word) { _, w ->
+                    engine.unsuppress(w)
+                    refreshDictionary()
+                    snackbar(getString(R.string.word_restored_confirmed, w)) {
+                        engine.suppress(w)
+                        refreshDictionary()
+                    }
+                }
+            }
+        )
     }
 
     private fun setupClipboard() {
