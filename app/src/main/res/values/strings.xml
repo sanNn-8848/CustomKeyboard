@@ -36,7 +36,7 @@
     <string name="word_added">Added \u201c%1$s\u201d</string>
 
     <string name="section_clipboard">Clipboard</string>
-    <string name="clipboard_hint">Copied text is saved here (last few items).</string>
+    <string name="clipboard_hint">Copied text is saved here (last few items). Tip: Android only lets this keyboard see copies made in other apps when MeroType is set as your default keyboard — set it in Settings → System → Languages &amp; input → Virtual keyboard.</string>
     <string name="clear_clipboard">Clear clipboard</string>
     <string name="no_clipboard">Nothing copied yet.</string>
 

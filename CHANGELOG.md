@@ -1,5 +1,14 @@
 # MeroType Changelog
 
+## [1.1.10] - 2026-09-15
+
+### Fixed
+- Clipboard pane now picks up text copied or cut in other apps (links, etc.)
+  - Captures whenever the keyboard opens, when the Clipboard tab is opened, and live on new copies
+  - Works when MeroType is set as the device's default keyboard (an Android 10+ platform rule); silently no-ops otherwise
+  - Never reads the clipboard while a password field is focused
+- Settings clipboard section explains the default-keyboard requirement
+
 ## [1.1.9] - 2026-09-14
 
 ### Added

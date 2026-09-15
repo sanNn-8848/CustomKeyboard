@@ -50,13 +50,62 @@ class RomanNepaliIME : InputMethodService() {
     @Volatile
     private var suggestionJob = 0L
 
+    private var systemClipboardListener:
+        android.content.ClipboardManager.OnPrimaryClipChangedListener? = null
+
     override fun onCreate() {
         super.onCreate()
 
         suggestionEngine = SuggestionEngine(this)
         clipboardManager = ClipboardManager(this)
 
+        // Watch the system clipboard so copies made in other apps (links, cut text,
+        // etc.) land in our clipboard pane. Android 10+ only allows this when this
+        // keyboard is the device's DEFAULT keyboard; otherwise we simply stay silent.
+        systemClipboardListener =
+            android.content.ClipboardManager.OnPrimaryClipChangedListener {
+                mainHandler.post { captureSystemClipboard() }
+            }
+        try {
+            val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                as? android.content.ClipboardManager
+            cm?.addPrimaryClipChangedListener(systemClipboardListener!!)
+        } catch (_: SecurityException) {
+            // Not the default IME — clipboard is off-limits.
+        }
+
         updateFullscreenMode()
+    }
+
+    /**
+     * Best-effort copy of whatever the user copied/cut in another app into our
+     * clipboard history. Never throws: silently no-ops when the platform forbids us.
+     */
+    private fun captureSystemClipboard() {
+        if (isPasswordField()) return
+        try {
+            val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                as? android.content.ClipboardManager
+                ?: return
+            val clip = cm.primaryClip ?: return
+            if (clip.itemCount == 0) return
+            val text = clip.getItemAt(0).coerceToText(this).toString()
+            if (text.isNotBlank()) {
+                clipboardManager.copy(text)
+            }
+        } catch (_: SecurityException) {
+            // Android 10+ and we are not the default IME.
+        } catch (_: IllegalStateException) {
+            // Primary clip not yet ready.
+        }
+    }
+
+    private fun isPasswordField(): Boolean {
+        val editorInfo = currentInputEditorInfo ?: return false
+        val variation = editorInfo.inputType and InputType.TYPE_MASK_VARIATION
+        return variation == InputType.TYPE_TEXT_VARIATION_PASSWORD ||
+            variation == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD ||
+            variation == InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
     }
 
     override fun onEvaluateFullscreenMode(): Boolean {
@@ -308,6 +357,8 @@ class RomanNepaliIME : InputMethodService() {
     )
 
     private fun refreshClipboardPane() {
+        // Pick up anything copied/cut in another app since the keyboard opened.
+        captureSystemClipboard()
         val dark = Prefs.darkTheme(this)
         clipboardPane?.bind(clipboardManager, dark) { text ->
             currentInputConnection?.commitText(text, 1)
@@ -430,11 +481,21 @@ class RomanNepaliIME : InputMethodService() {
         updateUndoUi()
         keyboardView?.applyThemeIfChanged()
         applyKeyboardTheme()
+        // If the user copied/cut something in another app, capture it now.
+        captureSystemClipboard()
     }
 
     override fun onDestroy() {
         suggestionJob++
         suggestionExecutor.shutdownNow()
+        try {
+            val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                as? android.content.ClipboardManager
+            cm?.removePrimaryClipChangedListener(systemClipboardListener)
+        } catch (_: SecurityException) {
+            // Ignore.
+        }
+        systemClipboardListener = null
         keyboardView?.onKeyPressed = null
         keyboardView = null
         suggestionBar = null
