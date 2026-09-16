@@ -398,9 +398,15 @@ class RomanNepaliIME : InputMethodService() {
         // Pick up anything copied/cut in another app since the keyboard opened.
         captureSystemClipboard()
         val dark = Prefs.darkTheme(this)
-        clipboardPane?.bind(clipboardManager, dark) { text ->
-            currentInputConnection?.commitText(text, 1)
-        }
+        clipboardPane?.bind(
+            clipboardManager,
+            dark,
+            onPaste = { text -> currentInputConnection?.commitText(text, 1) },
+            onDelete = { text ->
+                clipboardManager.removeByText(text)
+                refreshClipboardPane()
+            }
+        )
     }
 
     private fun refreshEmojiPane() {
@@ -533,6 +539,9 @@ class RomanNepaliIME : InputMethodService() {
     ) {
         super.onStartInput(attribute, restarting)
 
+        // Bulletproof: always clear a stuck overlay when a new input starts.
+        dragOverlay?.endCurrentDragIfAny()
+
         // Invalidate any in-flight suggestion computation.
         suggestionJob++
         currentWord.clear()
@@ -545,6 +554,11 @@ class RomanNepaliIME : InputMethodService() {
         applyKeyboardTheme()
         // If the user copied/cut something in another app, capture it now.
         captureSystemClipboard()
+    }
+
+    override fun onFinishInputView(finishingInput: Boolean) {
+        dragOverlay?.endCurrentDragIfAny()
+        super.onFinishInputView(finishingInput)
     }
 
     override fun onDestroy() {

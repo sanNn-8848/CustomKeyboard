@@ -1,5 +1,32 @@
 # MeroType Changelog
 
+## [1.1.13] - 2026-09-16
+
+### Added
+- Clipboard pane: each copied item now has a ✕ delete button to remove it from history
+- The word chip that you drag now pops out and follows your finger exactly (free 1:1 drag)
+
+### Fixed
+- "Suggestion Edit Mode" strip was popping in as a permanent black row above the
+  keyboard with a large dark void — it is now fully in-app: the two drop zones
+  (⭐ FAVORITE left / 🗑 DELETE right) appear directly above the suggestion bar only
+  while you are long-pressing a suggestion, and disappear as soon as you drop the
+  word or let go
+- The overlay can no longer get stuck open over the whole screen (even when not
+  long-pressing): it force-hides after any dropped gesture, on keyboard switch,
+  and on every new input session
+- No full-screen dark overlay anymore — the zones are small, exposed cells over the
+  suggestion strip, and only the keys dim slightly while dragging
+- Older 1×1 wrapper issue with the suggestion overlay that stretched the IME window
+
+### Changed
+- Dropping on FAVORITE only saves the word (no automatic text insertion) and gives
+  it a persistent upgrade in predictions
+- Your FAVORITE words are remembered permanently and surface higher in suggestions
+- Faster feel: pressing FAVORITE/DELETE performs the action instantly (no waiting for
+  the burst animation), and fly-back / pop animations are ~40% shorter so typing
+  resumes immediately
+
 ## [1.1.12] - 2026-09-15
 
 ### Fixed (re-release of Suggestion Edit Mode)
