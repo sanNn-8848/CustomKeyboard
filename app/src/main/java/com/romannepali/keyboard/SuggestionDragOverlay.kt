@@ -46,8 +46,8 @@ class SuggestionDragOverlay @JvmOverloads constructor(
     var onDragFinished: (() -> Unit)? = null
 
     private val zoneR = dp(34f)
-    private val zoneActiveR = dp(41f)
-    private val magnetR = dp(96f)
+    private val zoneActiveR = dp(48f)
+    private val magnetR = dp(112f)
     private val glowR = dp(74f)
     private val zoneMarginX = dp(48f)
     private val zoneTop = dp(48f)
@@ -93,8 +93,9 @@ class SuggestionDragOverlay @JvmOverloads constructor(
         origin.set(from)
         fingerX = touchX
         fingerY = touchY
-        ghostX = touchX + dp(1)
-        ghostY = touchY + dp(1)
+        // The ghost is exactly where the finger is: what you see is where it drops.
+        ghostX = touchX
+        ghostY = touchY
         inMagnet = false
         inDrop = false
         active = true
@@ -425,18 +426,14 @@ class SuggestionDragOverlay @JvmOverloads constructor(
     }
 
     private fun drawGhost(canvas: Canvas, phase: Float) {
-        // Magnetic pull: nudge the ghost toward the nearest zone inside its field.
-        var gx = ghostX
-        var gy = ghostY
+        // The ghost tracks the finger 1:1 — free dragging across the whole
+        // keyboard. The zones still react to proximity, so the magnetic feel
+        // comes from the glow/scale, not from tugging the chip around.
+        val gx = ghostX
+        val gy = ghostY
         val nearest = nearestZone(fingerX, fingerY)
         val center = if (nearest.zone == Zone.REMOVE) removeCenter else favoriteCenter
         val d = dist(fingerX, fingerY, center)
-        if (d < magnetR && status == STATUS_DRAG) {
-            val pull = (1f - d / magnetR).coerceIn(0f, 1f)
-            val factor = pull * pull * 0.24f
-            gx += (center.x - gx) * factor
-            gy += (center.y - gy) * factor
-        }
 
         val textW = ghostTextPaint.measureText(word)
         val w = max(dp(64).toFloat(), textW + dp(40).toFloat())

@@ -60,6 +60,10 @@ class SuggestionBar @JvmOverloads constructor(
         dragActive = true
         lastChip = chip
         chip.visibility = View.INVISIBLE
+        // Keep the suggestion scroller from hijacking the gesture once we start
+        // dragging toward a zone, so the chip follows the finger across the
+        // entire keyboard area instead of cancelling.
+        chipsScroll?.requestDisallowInterceptTouchEvent(true)
         chip.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
         onSuggestionDragStart?.invoke(chip, pendingWord, downRawX, downRawY)
     }
@@ -117,6 +121,7 @@ class SuggestionBar @JvmOverloads constructor(
 
             MotionEvent.ACTION_MOVE -> {
                 if (dragActive) {
+                    chipsScroll?.requestDisallowInterceptTouchEvent(true)
                     onSuggestionDragMove?.invoke(event.rawX, event.rawY)
                 } else if (movedBeyondSlop(event.rawX, event.rawY)) {
                     mainHandler.removeCallbacks(longPressRunnable)
@@ -125,6 +130,7 @@ class SuggestionBar @JvmOverloads constructor(
 
             MotionEvent.ACTION_UP -> {
                 mainHandler.removeCallbacks(longPressRunnable)
+                chipsScroll?.requestDisallowInterceptTouchEvent(false)
                 if (dragActive) {
                     dragActive = false
                     pendingChip = null
@@ -137,6 +143,7 @@ class SuggestionBar @JvmOverloads constructor(
 
             MotionEvent.ACTION_CANCEL -> {
                 mainHandler.removeCallbacks(longPressRunnable)
+                chipsScroll?.requestDisallowInterceptTouchEvent(false)
                 if (dragActive) {
                     dragActive = false
                     pendingChip = null

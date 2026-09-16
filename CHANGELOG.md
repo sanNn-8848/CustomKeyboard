@@ -1,5 +1,17 @@
 # MeroType Changelog
 
+## [1.1.12] - 2026-09-15
+
+### Fixed (re-release of Suggestion Edit Mode)
+- Keyboard no longer floats at the top with a huge empty void below — the keyboard
+  stack is pinned to the bottom of the screen like a normal keyboard
+- Dragging a suggestion now tracks your finger 1:1 across the entire keyboard area:
+  the suggestion scroller can no longer hijack (and cancel) the drag gesture
+- Ghost chip sits exactly under your finger (what you see is where it drops) and no
+  longer gets tugged around by a magnetic pull
+- Drop zones are larger (~48dp) and easier to hit, so both REMOVE and FAVORITE
+  are reachable from anywhere on the keyboard
+
 ## [1.1.11] - 2026-09-15
 
 ### Added
