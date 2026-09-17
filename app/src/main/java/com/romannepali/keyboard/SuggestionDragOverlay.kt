@@ -7,9 +7,7 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.RadialGradient
 import android.graphics.Rect
-import android.graphics.Shader
 import android.graphics.Typeface
 import android.os.Build
 import android.os.Handler
@@ -22,8 +20,6 @@ import android.view.View
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
 import kotlin.math.max
-import kotlin.math.min
-import kotlin.math.sin
 
 /**
  * "Suggestion Edit Mode" drag layer.
@@ -48,11 +44,11 @@ class SuggestionDragOverlay @JvmOverloads constructor(
     /** Fired once the drag is fully over so the caller can restore the grabbed chip. */
     var onDragFinished: (() -> Unit)? = null
 
-    private val stripR = dp(30f)
-    private val stripActiveR = dp(44f)
-    private val glowR = dp(68f)
-    private val stripTop = dp(10f)
-    private val stripBottom = dp(10f) + dp(64f)
+    /** The strip is a full-width band directly above the suggestion bar. */
+    private val stripTop = dp(6f)
+    private val stripH = dp(56f)
+    private val stripBottom = stripTop + stripH
+    private val cellPadX = dp(12f)
 
     private var active = false
     private var status = STATUS_HIDDEN
@@ -152,14 +148,12 @@ class SuggestionDragOverlay @JvmOverloads constructor(
     private fun stripCenterX(zone: Zone): Float =
         if (zone == Zone.FAVORITE) width / 4f else width * 3f / 4f
 
-    private fun stripCenterY(): Float = stripBottom - stripR
+    private fun stripCenterY(): Float = stripTop + stripH / 2f
 
-    /** Returns the zone whose circle the finger point is inside, or null. */
+    /** The whole strip band is the drop target: left half = FAVORITE, right half = DELETE. */
     private fun zoneAt(x: Float, y: Float): Zone? {
-        for (z in Zone.entries) {
-            if (dist(x, y, stripCenterX(z), stripCenterY()) <= stripActiveR) return z
-        }
-        return null
+        if (y < stripTop || y > stripBottom) return null
+        return if (x < width / 2f) Zone.FAVORITE else Zone.DELETE
     }
 
     private fun applyProximityHaptics(zone: Zone?) {
@@ -306,6 +300,11 @@ class SuggestionDragOverlay @JvmOverloads constructor(
         textAlign = Paint.Align.CENTER
         textSize = dp(22).toFloat()
     }
+    private val cellBgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val cellBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = dp(1.5f)
+    }
     private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textAlign = Paint.Align.CENTER
         color = Color.WHITE
@@ -363,69 +362,51 @@ class SuggestionDragOverlay @JvmOverloads constructor(
     }
 
     private fun drawStrip(canvas: Canvas, phase: Float) {
-        val p = (1f - popProgress) * 0.6f + popProgress // pop scales the whole strip
-        drawCell(canvas, stripCenterX(Zone.FAVORITE), stripCenterY(), Zone.FAVORITE, phase, p)
-        drawCell(canvas, stripCenterX(Zone.DELETE), stripCenterY(), Zone.DELETE, phase, p)
+        drawCell(canvas, 0f, width / 2f, Zone.FAVORITE)
+        drawCell(canvas, width / 2f, width.toFloat(), Zone.DELETE)
     }
 
-    private fun drawCell(
-        canvas: Canvas, cx: Float, cy: Float, zone: Zone, phase: Float, pop: Float
-    ) {
+    private fun drawCell(canvas: Canvas, left: Float, right: Float, zone: Zone) {
         val rgb = if (zone == Zone.DELETE) DELETE_RGB else FAVORITE_RGB
-        val d = dist(fingerX, fingerY, cx, cy)
-        val intensity = (1f - min(1f, d / glowR)).coerceIn(0f, 1f)
-        val isDrop = d <= stripActiveR
-        val ease = intensity * intensity * (3f - 2f * intensity)
-        val discR = stripR * pop * (1f + 0.35f * ease)
+        val active = zoneAt(fingerX, fingerY) == zone
+        val pop = ((1f - popProgress) * 0.5f + popProgress * 1f)
+        val alpha = (150 * pop).toInt()
 
-        // Magnetic halo.
-        if (ease > 0.02f && pop > 0.05f) {
-            val haloPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-            val inner = Color.argb(
-                (190 * ease).toInt(), Color.red(rgb), Color.green(rgb), Color.blue(rgb)
-            )
-            val mid = Color.argb(
-                (110 * ease).toInt(), Color.red(rgb), Color.green(rgb), Color.blue(rgb)
-            )
-            haloPaint.shader = RadialGradient(
-                cx, cy, glowR * pop,
-                intArrayOf(inner, mid, Color.TRANSPARENT),
-                floatArrayOf(0.12f, 0.45f, 1f),
-                Shader.TileMode.CLAMP
-            )
-            canvas.drawCircle(cx, cy, glowR * pop, haloPaint)
-        }
-
-        // Disc.
-        discPaint.color = Color.argb(
-            (60 + 170 * ease).toInt(), Color.red(rgb), Color.green(rgb), Color.blue(rgb)
+        // Cell background.
+        cellBgPaint.color = Color.argb(alpha, Color.red(rgb), Color.green(rgb), Color.blue(rgb))
+        cellBgPaint.alpha = if (active) 190 else 90
+        val inset = dp(3)
+        canvas.drawRoundRect(
+            left + inset, stripTop + inset,
+            right - inset, stripBottom - inset,
+            dp(12).toFloat(), dp(12).toFloat(), cellBgPaint
         )
-        canvas.drawCircle(cx, cy, discR, discPaint)
 
-        // Ring.
-        if (ease > 0.08f && pop > 0.05f) {
-            ringPaint.color = Color.argb(
-                (80 + 150 * ease).toInt(), Color.red(rgb), Color.green(rgb), Color.blue(rgb)
-            )
-            canvas.drawCircle(cx, cy, discR - dp(4), ringPaint)
-            ringPaint.alpha = (60 * (0.5f + 0.5f * sin(phase))).toInt()
-            canvas.drawCircle(cx, cy, discR + dp(6) + 2f * sin(phase), ringPaint)
-        }
+        // Accent border that brightens when the chip is over this cell.
+        cellBorderPaint.color = Color.argb(
+            (if (active) 230 else 120) * pop.toInt(),
+            Color.red(rgb), Color.green(rgb), Color.blue(rgb)
+        )
+        canvas.drawRoundRect(
+            left + inset, stripTop + inset,
+            right - inset, stripBottom - inset,
+            dp(12).toFloat(), dp(12).toFloat(), cellBorderPaint
+        )
 
-        // Icon.
+        val cx = (left + right) / 2f
+        val cy = stripTop + stripH / 2f
         val icon = if (zone == Zone.FAVORITE) "\u2B50" else "\uD83D\uDDD1\uFE0F"
         iconPaint.alpha = 255
         val fm = iconPaint.fontMetrics
         val baseline = cy - (fm.ascent + fm.descent) / 2f
         canvas.drawText(icon, cx, baseline, iconPaint)
 
-        // Label.
-        labelPaint.alpha = (110 + 140 * ease).toInt()
+        labelPaint.alpha = (130 + 125 * if (active) 1f else 0f).toInt()
         canvas.drawText(
             if (zone == Zone.FAVORITE) context.getString(R.string.suggestion_favorite_zone)
             else context.getString(R.string.suggestion_remove_zone),
             cx,
-            cy + discR + dp(12),
+            cy + dp(16),
             labelPaint
         )
     }
@@ -465,9 +446,6 @@ class SuggestionDragOverlay @JvmOverloads constructor(
     // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
-
-    private fun dist(x: Float, y: Float, px: Float, py: Float): Float =
-        kotlin.math.sqrt((x - px) * (x - px) + (y - py) * (y - py))
 
     private fun dp(value: Int): Int =
         TypedValue.applyDimension(

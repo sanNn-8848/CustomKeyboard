@@ -159,7 +159,7 @@ class GboardKeyboardView @JvmOverloads constructor(
         val landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
         // Letters ~50dp outer (48dp visible) in portrait, ~40dp in landscape so the
         // keyboard never eats more than ~55% of the screen in either orientation.
-        val letterRow = if (landscape) dp(40) else dp(50)
+        val letterRow = if (landscape) dp(38) else dp(42)
         val withNumber = numberRowEnabled && !isSymbols
         val totalWeight = 4f + if (withNumber) NUMBER_ROW_WEIGHT else 0f
         return (letterRow * totalWeight).toInt()

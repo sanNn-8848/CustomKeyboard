@@ -1,5 +1,22 @@
 # MeroType Changelog
 
+## [1.1.14] - 2026-09-16
+
+### Fixed
+- Tapping/committing a suggestion word no longer adds it to the clipboard history —
+  the clipboard only stores words you actually copied (from this app or the system)
+- Drop zones now span the full width as two cells (⭐ FAVORITE left / 🗑 DELETE right)
+  sitting directly above the suggestion bar, so releasing anywhere in a half triggers
+  that action — you no longer have to aim at tiny target circles
+- The zone strip pops in clearly while long-pressing a suggestion and fades out on drop
+- Suggestions are now real words only: removed fabricated dictionary entries
+  (e.g. "chhaau", "mujhi", "digra", "bimala", "krya") and disabled char-model
+  word-fabrication fills, so the suggestion bar no longer invents nonsense words
+
+### Changed
+- Let the view have more of the screen: key rows are shorter (50dp → 42dp letter rows),
+  so the keyboard takes up less vertical space
+
 ## [1.1.13] - 2026-09-16
 
 ### Added

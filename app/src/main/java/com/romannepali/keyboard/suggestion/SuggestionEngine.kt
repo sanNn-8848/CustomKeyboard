@@ -174,20 +174,9 @@ class SuggestionEngine(private val context: android.content.Context) {
                 .sortedByDescending { it.score }
         }
 
-        // 3. Fill remaining slots: split/merge, then character model, then emoji.
-        // Fills are last-resort tiers. When real candidates already exist, the
-        // character-model (which can fabricate non-words like "lageet") is heavily
-        // capped so it never floods the suggestion bar.
-        val realCount = results.count {
-            it.source != CandidateSource.CHAR_MODEL &&
-                it.source != CandidateSource.EMOJI &&
-                it.source != CandidateSource.SPLIT_MERGE
-        }
-        val maxCharFills = when {
-            realCount >= 5 -> 0
-            realCount >= 3 -> 1
-            else -> 2
-        }
+        // 3. Fill remaining slots: split/merge, then emoji. Character-model fills are
+        // disabled because they fabricate words that don't exist or make sense (e.g.
+        // "lageet", "chhaau") — the keyboard should only ever suggest real words.
 
         val taken = results.map { it.word }.toMutableSet()
         val room = { limit - taken.size }
@@ -212,22 +201,6 @@ class SuggestionEngine(private val context: android.content.Context) {
                     taken.add(it)
                     results = results.toMutableList().apply {
                         add(PredictionResult(it, EMOJI_SCORE, 0f, CandidateSource.EMOJI))
-                    }
-                }
-        }
-
-        if (room() > 0 && maxCharFills > 0) {
-            charModel.generate(
-                prefixInput = input,
-                maxResults = 20,
-                minLength = maxOf(3, input.length),
-                maxLength = 15
-            ).filter { it !in taken }
-                .take(minOf(room(), maxCharFills))
-                .forEach {
-                    taken.add(it)
-                    results = results.toMutableList().apply {
-                        add(PredictionResult(it, CHAR_SCORE, 0f, CandidateSource.CHAR_MODEL))
                     }
                 }
         }
@@ -547,20 +520,20 @@ class SuggestionEngine(private val context: android.content.Context) {
         "kina" to 900, "ke" to 1000, "ko" to 900, "kaha" to 900,
         "kata" to 850, "kahile" to 850, "kina ho" to 800,
         "kina lagyo" to 750, "ke bhayo" to 900, "ke chha" to 950,
-        "k kaso" to 800, "kasari" to 800, "kina yo" to 700,
+        "kasari" to 800,
         "kati" to 880, "kasto" to 880, "kato" to 700,
         "keta" to 850, "keto" to 800,
 
         // Common pronouns & linking words
         "ma" to 1000, "timi" to 950, "hami" to 900, "tapaai" to 850,
-        "yesto" to 800, "tyesto" to 750, "nazar" to 700,
+        "yesto" to 800, "tyesto" to 750,
         "mero" to 950, "mera" to 900, "meri" to 850, "timro" to 900, "hamro" to 850, "usko" to 800,
         "tero" to 880, "tera" to 850, "teri" to 800, "tesko" to 800,
         "usle" to 750, "uniharu" to 700, "hajur" to 800,
         "unki" to 750, "bhai" to 900, "didi" to 850,
 
         // Common words
-        "yo" to 1000, "tyo" to 900, "eha" to 800, "tyaha" to 750,
+        "yo" to 1000, "tyo" to 900,
         "cha" to 1000, "chaina" to 950, "thyo" to 900, "hola" to 850,
         "garchu" to 900, "garcha" to 850, "gareko" to 800,
         "khaanu" to 750, "khana" to 800, "pini" to 850,
@@ -570,8 +543,8 @@ class SuggestionEngine(private val context: android.content.Context) {
         // Family
         "bua" to 900, "aamaa" to 950, "dai" to 850, "bhai" to 900,
         "didi" to 850, "bahini" to 900, "kaka" to 800, "kaki" to 800,
-        "mama" to 800, "mami" to 800, "sasa" to 750, "sasi" to 750,
-        "chhora" to 850, "chhori" to 850, "bou" to 800, "buba" to 850,
+        "mama" to 800, "mami" to 800,
+        "chhora" to 850, "chhori" to 850, "buba" to 850,
 
         // Numbers
         "ek" to 1000, "dui" to 950, "tin" to 900, "char" to 850,
@@ -586,7 +559,7 @@ class SuggestionEngine(private val context: android.content.Context) {
         "saniibaar" to 700, "aaitabaar" to 650,
 
         // Time
-        "beluka" to 800, "bihaan" to 850, "digra" to 750,
+        "beluka" to 800, "bihaan" to 850,
         "rat" to 800, "din" to 850, "mahina" to 700, "barsha" to 650,
         "bihana" to 850, "sandhya" to 750, "aatma" to 700,
 
@@ -610,22 +583,21 @@ class SuggestionEngine(private val context: android.content.Context) {
 
         // Objects
         "ghar" to 900, "kamra" to 800, "bato" to 850, "pasal" to 800,
-        "kitab" to 750, "kalam" to 700, "daaki" to 650, "paati" to 700,
-        "chhaaro" to 700, "batti" to 650, "paani" to 850, "aago" to 800,
+        "kitab" to 750, "kalam" to 700,
+        "batti" to 650, "paani" to 850, "aago" to 800,
         "geet" to 750, "tara" to 700, "chandrama" to 700, "suraj" to 750,
-        "bimala" to 650, "khet" to 700, "bagaicha" to 700,
+        "khet" to 700, "bagaicha" to 700,
 
         // Complex / longer words
         "dhanyabaad" to 950, "dhanyawad" to 900, "maaph garne" to 700,
         "maaph" to 750, "bhagya" to 700, "ekaant" to 700,
         "prasna" to 700, "pratibha" to 700, "shakti" to 700,
-        "samaya" to 750, "saman" to 700, "sahai" to 700,
-        "jeewan" to 800, "mritra" to 700, "viśwās" to 700,
-        "bishwasa" to 750, "krya" to 700, "sandarbha" to 650,
+        "samaya" to 750, "saman" to 700,
+        "jeewan" to 800,
+        "bishwasa" to 750,
         "sambhanda" to 700, "vachan" to 700, "bishal" to 700,
         "sthiti" to 700, "bichar" to 800, "bichara" to 750,
         "kura" to 900, "katha" to 800, "kahani" to 850,
-        "dinhara" to 750, "rahara" to 750, "bachan" to 750,
 
         // Core verbs & copulas
         "ho" to 1000, "hoina" to 850, "cha" to 1000, "chhaina" to 900,
@@ -636,7 +608,7 @@ class SuggestionEngine(private val context: android.content.Context) {
         "bhanne" to 800, "bhane" to 750, "garne" to 800, "gare" to 800,
         "garera" to 800, "garchhu" to 800, "garchha" to 800, "garna" to 900,
         "jane" to 850, "jau" to 800, "janchu" to 800, "aau" to 800,
-        "aayo" to 900, "aayeo" to 850, "gayo" to 850, "gaeko" to 700,
+        "aayo" to 900, "gayo" to 850, "gaeko" to 700,
         "saknu" to 750, "sakda" to 700, "parchhu" to 700, "parchha" to 700,
 
         // Adverbs & quantifiers
@@ -651,20 +623,20 @@ class SuggestionEngine(private val context: android.content.Context) {
         "sukhi" to 800, "khusi" to 850, "dukhi" to 750, "maya" to 850,
         "prem" to 800, "logne" to 700, "swasni" to 700, "buhari" to 750,
         "jethan" to 650, "kanchha" to 650, "aama" to 850,
-        "aamaa" to 950, "bua" to 900, "haamro" to 800, "timro" to 900,
+        "aamaa" to 950, "bua" to 900, "timro" to 900,
 
         // Grammar particles
         "lai" to 900, "le" to 900, "baata" to 850, "bata" to 850,
         "sanga" to 800, "sangai" to 750, "maa" to 850, "ma" to 900,
         "mathi" to 850, "tala" to 850, "agadi" to 800, "pachadi" to 750,
         "najik" to 700, "para" to 700, "bhitra" to 800, "bahira" to 800,
-        "mujhi" to 700, "bichma" to 700, "chheu" to 700, "chhaau" to 650,
+        "bichma" to 700, "chheu" to 700,
 
         // Food & things
         "bhat" to 850, "daal" to 800, "tarkari" to 750, "dahi" to 750,
         "dudh" to 750, "chiya" to 800, "paisa" to 850, "paisa ho" to 750,
         "gheu" to 650, "nun" to 700, "chini" to 700, "paani" to 850,
-        "kinmel" to 700, "kura ho" to 750,
+        "kura ho" to 750,
 
         // Places & nature
         "gaun" to 700, "pahar" to 750, "nadi" to 700, "sahara" to 700,
@@ -682,9 +654,7 @@ class SuggestionEngine(private val context: android.content.Context) {
         "k bhayo" to 850, "k garnu" to 800, "thik cha" to 900,
         "huss" to 900, "la" to 950, "dhanyabaad" to 800, "maaph" to 750,
         "kasto cha" to 850, "thik thak" to 800, "namaste" to 1000,
-        "sarga ko" to 700, "bhu ya" to 700,
         "keta ho" to 850, "keto ho" to 800, "mero keta" to 800,
-        "mero naam ram ho" to 750, "keta namaune" to 700,
 
         // Names / places / everyday words useful for emoji + autocorrect tests
         "manche" to 800, "manxe" to 500, "chhu" to 750, "chha" to 1000,
@@ -697,7 +667,6 @@ class SuggestionEngine(private val context: android.content.Context) {
 
         /** Small fill scores for the last-resort candidate tiers (below layer weights). */
         const val SPLIT_SCORE = 0.75f
-        const val CHAR_SCORE = 0.45f
         const val EMOJI_SCORE = 0.25f
 
         /** Extra score added to favorites so they rank ahead of equal peers. */

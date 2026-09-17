@@ -365,7 +365,6 @@ class RomanNepaliIME : InputMethodService() {
         suggestionEngine.learnWord(committed)
         suggestionEngine.updateContext(committed)
         pushContext(committed)
-        clipboardManager.copy(committed)
         currentWord.clear()
     }
 
@@ -455,7 +454,6 @@ class RomanNepaliIME : InputMethodService() {
             suggestionEngine.learnWord(word)
             suggestionEngine.updateContext(word)
             pushContext(word)
-            clipboardManager.copy(word)
         }
 
         currentWord.clear()

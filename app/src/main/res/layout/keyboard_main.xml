@@ -52,7 +52,7 @@
         <com.romannepali.keyboard.GboardKeyboardView
             android:id="@+id/keyboard_view"
             android:layout_width="match_parent"
-            android:layout_height="240dp"
+            android:layout_height="168dp"
             android:background="@android:color/transparent" />
     </LinearLayout>
 
