@@ -1,5 +1,6 @@
 package com.romannepali.keyboard.suggestion
 
+import org.json.JSONObject
 import kotlin.math.abs
 import kotlin.math.ln
 
@@ -34,7 +35,7 @@ data class Correction(
 
 class SuggestionEngine(private val context: android.content.Context) {
     private val trie = Trie()
-    private val ngramModel = NgramModel()
+    private val ngramModel = NgramModel(context)
     private val charModel = CharModel(context)
     private val store = DictionaryStore(context)
 
@@ -42,8 +43,16 @@ class SuggestionEngine(private val context: android.content.Context) {
     private val suppressedWords = store.loadSuppressed().toMutableSet()
     private val favoriteWords = store.loadFavorites().toMutableSet()
 
+    // Base ranks from the shipped vocabulary, so removing a learned/personal
+    // entry can restore the exact original frequency instead of killing it.
+    private val baseFrequencies = HashMap<String, Int>()
+
     private val scoreCache = HashMap<String, Double>()
     private var knownWordsCache: List<String>? = null
+
+    // Variant-group data from roman_words.json (canonical spelling per group).
+    private var variantGroups: Map<String, List<String>> = emptyMap()
+    private var wordToGroupKey: Map<String, String> = emptyMap()
 
     // Context for next-word prediction (previous finished words).
     private val contextWords = mutableListOf<String>()
@@ -64,7 +73,7 @@ class SuggestionEngine(private val context: android.content.Context) {
     private val weights: Map<CandidateSource, Double> = mapOf(
         CandidateSource.PREFIX to 1.2,
         CandidateSource.DICTIONARY to 1.0,
-        CandidateSource.LEARNED to 0.9,
+        CandidateSource.LEARNED to 1.0,
         CandidateSource.PERSONAL to 0.9,
         CandidateSource.NGRAM to 1.5,
         CandidateSource.TYPO to 1.3,
@@ -76,13 +85,13 @@ class SuggestionEngine(private val context: android.content.Context) {
 
     fun predict(context: PredictionContext, limit: Int = 3): List<PredictionResult> {
         val input = context.currentWord.trim().lowercase()
-        if (input.isEmpty()) return emptyList()
-
         val prev = context.previousWords.map { it.trim().lowercase() }.filter { it.isNotEmpty() }
+
+        // Word boundary: generate the NEXT word from context bigrams/trigrams.
+        if (input.isEmpty()) return predictNextWord(prev, limit)
+
         val allKnown = getAllKnownWords()
 
-        // Per-candidate, per-source contributions. Kept raw (0..1 scale per layer)
-        // and weighted only when the final score is computed.
         val contributions = HashMap<String, HashMap<CandidateSource, Double>>()
 
         fun bump(word: String, source: CandidateSource, value: Double) {
@@ -92,28 +101,56 @@ class SuggestionEngine(private val context: android.content.Context) {
 
         // 1a. Dictionary / personal / learned prefix matches (all live in the trie).
         val prefixResults = trie.search(input)
-        prefixResults.forEach { (word, frequency) ->
-            bump(word, CandidateSource.PREFIX, input.length.toDouble() / maxOf(1, word.length))
-            bump(word, CandidateSource.DICTIONARY, freqLog(frequency))
-            if (frequency == SAVED_WORD_FREQUENCY) bump(word, CandidateSource.PERSONAL, 1.0)
+        prefixResults
+            .take(MAX_PREFIX_CANDIDATES)
+            .forEach { (word, frequency) ->
+                bump(word, CandidateSource.PREFIX, input.length.toDouble() / maxOf(1, word.length))
+                bump(word, CandidateSource.DICTIONARY, freqLog(frequency))
+                if (frequency == SAVED_WORD_FREQUENCY) bump(word, CandidateSource.PERSONAL, 1.0)
+            }
+
+        // 1b. Variant expansion: the canonical spelling of the user's normalized
+        // input (e.g. "aja" -> canonical "aaja") even though it doesn't prefix-match.
+        expandVariants(input)
+            .filter { it !in contributions }
+            .forEach { word ->
+                bump(word, CandidateSource.PREFIX, VARIANT_BOOST)
+                bump(word, CandidateSource.DICTIONARY, freqLog(trie.getFrequency(word)))
+            }
+        // Collapse all variants of the same group into the canonical spelling so a
+        // keystroke surfaces one clean candidate (khusi/khushi/khusii -> khusi).
+        dedupeVariants(contributions)
+        if (contributions.isEmpty()) {
+            // Also try matching a partial normalized key (typing "khush").
+            val prefixKey = RomanNormalizer.normalize(input)
+            if (prefixKey.isNotEmpty()) {
+                variantGroups.forEach { (key, members) ->
+                    if (key.startsWith(prefixKey)) {
+                        dedupeVariants(contributions)
+                        members.forEach { word ->
+                            bump(word, CandidateSource.PREFIX, VARIANT_BOOST)
+                            bump(word, CandidateSource.DICTIONARY, freqLog(trie.getFrequency(word)))
+                        }
+                        dedupeVariants(contributions)
+                    }
+                }
+            }
         }
 
-        // 1b. Fuzzy corrections for misspelled input (recovers the nearest known word).
-        // Only runs when the input isn't already a recognisable prefix/word, so common
-        // prefixes aren't flooded with 1-2 edit "noise" words. Only strong matches
-        // (>=60% similar, <=2 edits, length within 3) count as typos.
-        if (input.length >= 3 && prefixResults.isEmpty()) {
+        // 1c. Fuzzy corrections for misspelled input (recover nearest known word).
+        if (input.length >= 3 && contributions.isEmpty()) {
             for (word in allKnown) {
                 if (abs(word.length - input.length) > 3) continue
                 val dist = levenshtein(input, word)
                 if (dist > 2) continue
                 val similarity = 1.0 - dist.toDouble() / maxOf(input.length, word.length, 1)
                 if (similarity < 0.6) continue
-                bump(word, CandidateSource.TYPO, similarity)
+                // Nearby + COMMON wins: "namsate" -> "namaste", never the rare "namste".
+                bump(word, CandidateSource.TYPO, similarity * 0.6 + freqLog(trie.getFrequency(word)))
             }
         }
 
-        // 1c. Context: n-gram next-word boost, newest previous word weighted highest.
+        // 1d. Context: n-gram next-word boost, newest previous word weighted highest.
         prev.forEachIndexed { index, word ->
             val recency = when (index) {
                 0 -> 1.0
@@ -127,14 +164,15 @@ class SuggestionEngine(private val context: android.content.Context) {
             }
         }
 
-        // 1d. Words this user typed before.
+        // 1e. Words this user typed before are heavily personalised: any learned
+        // word matching the prefix outranks generic dictionary matches.
         for ((word, count) in learnedWords) {
             if (word.startsWith(input)) {
-                bump(word, CandidateSource.LEARNED, ln(1.0 + count) / 5.0)
+                bump(word, CandidateSource.LEARNED, minOf(1.0, 0.6 + ln(1.0 + count) / 2.5))
             }
         }
 
-        // 1e. Repeated trailing characters: "chaaa" -> "cha", "soooo" -> "so".
+        // 1f. Repeated trailing characters: "chaaa" -> "cha", "soooo" -> "so".
         collapseRepeated(input)?.let { base ->
             if (base != input && trie.contains(base)) {
                 bump(base, CandidateSource.REPEATED, 0.8)
@@ -181,7 +219,9 @@ class SuggestionEngine(private val context: android.content.Context) {
         val taken = results.map { it.word }.toMutableSet()
         val room = { limit - taken.size }
 
-        if (room() > 0) {
+        // Split "meroharu" -> "mero haru" only when the string is not already a known
+        // word; splitting "paani" produces junk splits that crowd out better fills.
+        if (room() > 0 && !trie.contains(input)) {
             splitCandidates(input)
                 .filter { it !in taken }
                 .take(room())
@@ -212,9 +252,70 @@ class SuggestionEngine(private val context: android.content.Context) {
         return withConfidence(ranked)
     }
 
+    /** Next-word prediction at a word boundary, generated purely from the
+     *  vocabulary + context n-grams. Returns real words only. */
+    private fun predictNextWord(prev: List<String>, limit: Int): List<PredictionResult> {
+        if (prev.isEmpty()) return emptyList()
+
+        val next = if (prev.size >= 2) {
+            ngramModel.getNextWordCandidates(prev[prev.size - 2], prev.last())
+        } else {
+            ngramModel.getNextWordCandidates(prev.last())
+        }
+
+        val seen = HashSet<String>()
+        val results = ArrayList<PredictionResult>()
+        for ((word, frequency) in next) {
+            if (results.size >= limit) break
+            if (word in suppressedWords) continue
+            if (!trie.contains(word)) continue
+            // One candidate tile per spelling (khusi/khushi/khusii -> khusi).
+            val canonical = canonicalWord(word)
+            if (!seen.add(canonical)) continue
+            results.add(
+                PredictionResult(
+                    word = canonical,
+                    score = (frequency + 1).toFloat(),
+                    confidence = (1.0 - 0.1 * results.size).coerceAtLeast(0.0).toFloat(),
+                    source = CandidateSource.NGRAM
+                )
+            )
+        }
+        return results.take(limit)
+    }
+
+    private fun canonicalWord(word: String): String {
+        val key = wordToGroupKey[word] ?: return word
+        val members = variantGroups[key] ?: return word
+        return if (members.size > 1) members[0] else word
+    }
+
+    /** Returns words whose normalized key exactly matches the input's key. */
+    private fun expandVariants(input: String): List<String> {
+        val key = RomanNormalizer.normalize(input)
+        if (key.isEmpty()) return emptyList()
+        val members = variantGroups[key] ?: return emptyList()
+        if (members.size <= 1) return emptyList()
+        return members
+    }
+
+    /** Collapses group variants in the contributions map to the canonical word. */
+    private fun dedupeVariants(contributions: HashMap<String, HashMap<CandidateSource, Double>>) {
+        val toCanonical = HashMap<String, String>()
+        for (word in contributions.keys) {
+            val canon = canonicalWord(word)
+            if (canon != word) toCanonical[word] = canon
+        }
+        for ((variant, canon) in toCanonical) {
+            val sources = contributions.remove(variant) ?: continue
+            val target = contributions.getOrPut(canon) { HashMap() }
+            for ((source, value) in sources) {
+                target[source] = maxOf(target[source] ?: 0.0, value)
+            }
+        }
+    }
+
     private fun withConfidence(ranked: List<PredictionResult>): List<PredictionResult> {
-        // Fills (char-model, emoji, split/merge) are last-resort tiers, not rivals:
-        // they must not dilute how confident we are in the real candidates.
         val real = ranked.filter {
             it.source != CandidateSource.CHAR_MODEL &&
                 it.source != CandidateSource.EMOJI &&
@@ -238,9 +339,7 @@ class SuggestionEngine(private val context: android.content.Context) {
     }
 
     /**
-     * Decomposes a no-space string into "prefix suffix" where the prefix is a
-     * known word (dictionary, saved or learned) and the suffix is either another
-     * known word or a common Nepali grammatical suffix. "lamoharu" -> "lamo haru".
+     * Decomposes a no-space string into "prefix suffix".
      */
     private fun splitCandidates(word: String): List<String> {
         if (word.length < 4) return emptyList()
@@ -306,9 +405,14 @@ class SuggestionEngine(private val context: android.content.Context) {
     fun learnWord(word: String) {
         val clean = word.lowercase()
         if (clean.isBlank()) return
-        learnedWords.merge(clean, 1, Int::plus)
-        trie.insert(clean, learnedWords[clean] ?: 1)
+        val count = (learnedWords[clean] ?: 0) + 1
+        learnedWords[clean] = count
+        // Never let a learned count clobber a saved/dictionary rank.
+        if (count > trie.getFrequency(clean)) {
+            trie.insert(clean, count)
+        }
         knownWordsCache = null
+        if (learnedWords.size > MAX_LEARNED_WORDS) trimLearnedWords()
         store.saveLearned(learnedWords)
     }
 
@@ -316,7 +420,6 @@ class SuggestionEngine(private val context: android.content.Context) {
         val clean = word.lowercase()
         if (clean.isBlank()) return
 
-        // Learn a soft bigram from the user's real typing.
         contextWords.lastOrNull()?.let { previous ->
             ngramModel.addBigram(previous, clean, 4)
         }
@@ -349,7 +452,7 @@ class SuggestionEngine(private val context: android.content.Context) {
         if (saved.remove(word)) {
             store.saveSaved(saved)
         }
-        trie.remove(word)
+        restoreTrieEntry(word)
         knownWordsCache = null
     }
 
@@ -407,14 +510,14 @@ class SuggestionEngine(private val context: android.content.Context) {
 
     fun removeLearnedWord(word: String) {
         if (learnedWords.remove(word.lowercase()) != null) {
-            trie.remove(word.lowercase())
+            restoreTrieEntry(word)
             knownWordsCache = null
             store.saveLearned(learnedWords)
         }
     }
 
     fun clearLearnedWords() {
-        learnedWords.keys.forEach { trie.remove(it.lowercase()) }
+        learnedWords.keys.forEach { restoreTrieEntry(it) }
         learnedWords.clear()
         knownWordsCache = null
         store.saveLearned(learnedWords)
@@ -423,10 +526,38 @@ class SuggestionEngine(private val context: android.content.Context) {
     fun restoreLearned(words: Map<String, Int>) {
         words.forEach { (word, count) ->
             learnedWords[word] = count
-            trie.insert(word.lowercase(), count)
+            // Restore the word's rightful rank (novel words come back at full count).
+            if (count > trie.getFrequency(word.lowercase())) {
+                trie.insert(word.lowercase(), count)
+            }
         }
         knownWordsCache = null
         store.saveLearned(learnedWords)
+    }
+
+    /** Puts a word back to its pre-learning trie state: personal words keep their
+     *  boost, dictionary words their base frequency, novel words disappear. */
+    private fun restoreTrieEntry(word: String) {
+        val key = word.lowercase()
+        when {
+            key in store.loadSaved() -> trie.insert(key, SAVED_WORD_FREQUENCY)
+            baseFrequencies.containsKey(key) -> trie.insert(key, baseFrequencies.getValue(key))
+            else -> trie.remove(key)
+        }
+    }
+
+    /** Bounds the learned bucket: drops lowest-count words first so the personal
+     *  history keeps only the user's genuinely frequent vocabulary. */
+    private fun trimLearnedWords() {
+        val overflow = learnedWords.size - MAX_LEARNED_WORDS
+        if (overflow <= 0) return
+        learnedWords.entries
+            .sortedBy { it.value }
+            .take(overflow)
+            .forEach { (word, _) ->
+                learnedWords.remove(word)
+                restoreTrieEntry(word)
+            }
     }
 
     /** Collapses a trailing run of 3+ identical letters ("heyyy" -> "hey"). */
@@ -487,178 +618,87 @@ class SuggestionEngine(private val context: android.content.Context) {
     }
 
     // ------------------------------------------------------------------
-    // Static dictionary data.
+    // Dictionary data: real vocabulary + variant groups from assets.
     // ------------------------------------------------------------------
 
     private fun loadDictionary() {
-        val commonWords = dictionaryWords()
-        commonWords.forEach { (word, freq) -> trie.insert(word, freq) }
+        val (words, groups, wordToKey) = loadVocabularyAsset()
+            ?: loadEmbeddedFallback()
+
+        variantGroups = groups
+
+        val wordToGroup = HashMap<String, String>()
+        groups.forEach { (key, members) -> members.forEach { wordToGroup[it] = key } }
+        wordToGroup.putAll(wordToKey)
+        wordToGroupKey = wordToGroup
+
+        words.forEach { (word, freq) -> trie.insert(word, freq) }
+        baseFrequencies.clear()
+        baseFrequencies.putAll(words)
     }
 
-    private fun loadBigrams() {
-        val bigrams = listOf(
-            "ma" to "garchu", "ma" to "cha", "timi" to "kasto",
-            "huss" to "la", "thik" to "cha", "namaste" to "kasto",
-            "mero" to "naam", "timro" to "naam", "aaja" to "k",
-            "bholi" to "k", "k" to "huncha", "k" to "bhayo",
-            "dhanyabaad" to "la", "maaph" to "la", "ramro" to "cha",
-            "naramro" to "cha", "thulo" to "cha", "sano" to "cha"
-        )
+    /** Loads roman_words.json once per process; trie is rebuilt per engine. */
+    private fun loadVocabularyAsset(): Triple<List<Pair<String, Int>>, Map<String, List<String>>, Map<String, String>>? {
+        companionVocab?.let { return it }
+        return try {
+            val text = context.assets.open("roman_words.json")
+                .bufferedReader().use { it.readText() }
+            val root = JSONObject(text)
 
-        bigrams.forEach { (word1, word2) ->
-            ngramModel.addBigram(word1, word2, 100)
+            val words = ArrayList<Pair<String, Int>>()
+            val arr = root.optJSONArray("words") ?: throw RuntimeException("missing words")
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                val w = obj.optString("w")
+                val f = obj.optInt("f", 0)
+                if (w.isNotEmpty()) words.add(w to f)
+            }
+
+            val groups = HashMap<String, List<String>>()
+            val groupObj = root.optJSONObject("groups") ?: JSONObject()
+            val keys = groupObj.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                val ja = groupObj.optJSONArray(key) ?: continue
+                val members = ArrayList<String>(ja.length())
+                for (i in 0 until ja.length()) {
+                    members.add(ja.optString(i))
+                }
+                groups[key] = members
+            }
+
+            Triple<List<Pair<String, Int>>, Map<String, List<String>>, Map<String, String>>(
+                words,
+                groups,
+                emptyMap()
+            ).also { companionVocab = it }
+        } catch (e: Exception) {
+            null
         }
     }
 
+    private fun loadBigrams() {
+        val unigramFrequencies = HashMap<String, Int>()
+        trie.getAllWords().forEach { (word, freq) -> unigramFrequencies[word] = freq }
+        ngramModel.loadModel(unigramFrequencies)
+        // Personalised context bigrams (user typing habits).
+        ngramModel.mergeUserContext(contextWords)
+    }
+
+    private fun loadEmbeddedFallback(): Triple<List<Pair<String, Int>>, Map<String, List<String>>, Map<String, String>> {
+        val words = dictionaryWords().toList()
+        return Triple(words, emptyMap(), emptyMap())
+    }
+
     private fun dictionaryWords(): Map<String, Int> = mapOf(
-        // Greetings
-        "namaste" to 1000, "namaskar" to 900, "namaste cha" to 800,
-        "thik cha" to 850, "la" to 900, "huss" to 800,
-        "subha prabhat" to 700, "shubha ratri" to 750, "namaskaram" to 700,
-
-        // Question words
+        "namaste" to 1000, "namaskar" to 900, "la" to 900, "huss" to 800,
         "kina" to 900, "ke" to 1000, "ko" to 900, "kaha" to 900,
-        "kata" to 850, "kahile" to 850, "kina ho" to 800,
-        "kina lagyo" to 750, "ke bhayo" to 900, "ke chha" to 950,
-        "kasari" to 800,
-        "kati" to 880, "kasto" to 880, "kato" to 700,
-        "keta" to 850, "keto" to 800,
-
-        // Common pronouns & linking words
-        "ma" to 1000, "timi" to 950, "hami" to 900, "tapaai" to 850,
-        "yesto" to 800, "tyesto" to 750,
-        "mero" to 950, "mera" to 900, "meri" to 850, "timro" to 900, "hamro" to 850, "usko" to 800,
-        "tero" to 880, "tera" to 850, "teri" to 800, "tesko" to 800,
-        "usle" to 750, "uniharu" to 700, "hajur" to 800,
-        "unki" to 750, "bhai" to 900, "didi" to 850,
-
-        // Common words
-        "yo" to 1000, "tyo" to 900,
-        "cha" to 1000, "chaina" to 950, "thyo" to 900, "hola" to 850,
-        "garchu" to 900, "garcha" to 850, "gareko" to 800,
-        "khaanu" to 750, "khana" to 800, "pini" to 850,
-        "sutaunu" to 700, "sutna" to 750, "jana" to 800,
-        "aunu" to 850, "janu" to 800, "gumna" to 700,
-
-        // Family
-        "bua" to 900, "aamaa" to 950, "dai" to 850, "bhai" to 900,
-        "didi" to 850, "bahini" to 900, "kaka" to 800, "kaki" to 800,
-        "mama" to 800, "mami" to 800,
-        "chhora" to 850, "chhori" to 850, "buba" to 850,
-
-        // Numbers
-        "ek" to 1000, "dui" to 950, "tin" to 900, "char" to 850,
-        "panch" to 800, "chha" to 750, "saat" to 700, "aath" to 650,
-        "nau" to 600, "dus" to 550, "ekkis" to 500, "bais" to 450,
-        "tis" to 400, "saya" to 500, "hajar" to 450,
-
-        // Days
-        "aaja" to 900, "bholi" to 850, "hijo" to 800,
-        "paraahi" to 700, "sombaar" to 750, "mangalbaar" to 700,
-        "budhabaar" to 700, "bihibaar" to 700, "sukrabaar" to 700,
-        "saniibaar" to 700, "aaitabaar" to 650,
-
-        // Time
-        "beluka" to 800, "bihaan" to 850,
-        "rat" to 800, "din" to 850, "mahina" to 700, "barsha" to 650,
-        "bihana" to 850, "sandhya" to 750, "aatma" to 700,
-
-        // Actions
-        "kam" to 900, "padh" to 850, "lekh" to 800, "bol" to 850,
-        "her" to 800, "ja" to 900, "aa" to 950, "de" to 900,
-        "lau" to 850, "kha" to 800, "pi" to 800, "soch" to 750,
-        "bujh" to 700, "sik" to 750, "sikhaa" to 700,
-        "garna" to 900, "lena" to 850, "dinu" to 800, "paunu" to 800,
-        "basnu" to 750, "uthnu" to 750, "hidnu" to 700, "daudanu" to 650,
-        "khelnu" to 800, "padhnu" to 850, "lekhnu" to 800, "bujhnu" to 750,
-        "bolnu" to 850, "sunna" to 800, "hernu" to 750,
-
-        // Adjectives
-        "ramro" to 900, "naramro" to 850, "thulo" to 850, "sano" to 850,
-        "lamo" to 800, "choto" to 800, "gahro" to 750, "sajilo" to 800,
-        "naya" to 850, "purano" to 800, "ramailo" to 900,
-        "sundar" to 800, "sundari" to 750, "mitho" to 850,
-        "guliyo" to 750, "tito" to 700, "nilo" to 700, "rato" to 800,
-        "pahelo" to 750, "hario" to 750, "kalo" to 800, "seto" to 750,
-
-        // Objects
-        "ghar" to 900, "kamra" to 800, "bato" to 850, "pasal" to 800,
-        "kitab" to 750, "kalam" to 700,
-        "batti" to 650, "paani" to 850, "aago" to 800,
-        "geet" to 750, "tara" to 700, "chandrama" to 700, "suraj" to 750,
-        "khet" to 700, "bagaicha" to 700,
-
-        // Complex / longer words
-        "dhanyabaad" to 950, "dhanyawad" to 900, "maaph garne" to 700,
-        "maaph" to 750, "bhagya" to 700, "ekaant" to 700,
-        "prasna" to 700, "pratibha" to 700, "shakti" to 700,
-        "samaya" to 750, "saman" to 700,
-        "jeewan" to 800,
-        "bishwasa" to 750,
-        "sambhanda" to 700, "vachan" to 700, "bishal" to 700,
-        "sthiti" to 700, "bichar" to 800, "bichara" to 750,
-        "kura" to 900, "katha" to 800, "kahani" to 850,
-
-        // Core verbs & copulas
-        "ho" to 1000, "hoina" to 850, "cha" to 1000, "chhaina" to 900,
-        "thiyo" to 850, "thiena" to 700, "bhayo" to 900, "huncha" to 900,
-        "hunchha" to 850, "paryo" to 800, "parcha" to 750, "lagyo" to 850,
-        "khao" to 800, "khan" to 750, "ja" to 900, "aa" to 950, "de" to 900,
-        "du" to 700, "gara" to 800, "haru" to 900, "bhaneko" to 750,
-        "bhanne" to 800, "bhane" to 750, "garne" to 800, "gare" to 800,
-        "garera" to 800, "garchhu" to 800, "garchha" to 800, "garna" to 900,
-        "jane" to 850, "jau" to 800, "janchu" to 800, "aau" to 800,
-        "aayo" to 900, "gayo" to 850, "gaeko" to 700,
-        "saknu" to 750, "sakda" to 700, "parchhu" to 700, "parchha" to 700,
-
-        // Adverbs & quantifiers
-        "dherai" to 900, "thorai" to 800, "ekdam" to 750, "ali" to 850,
-        "ek" to 1000, "dui" to 950, "tin" to 900, "char" to 850,
-        "panch" to 800, "hajur" to 800, "yahi" to 800, "tyahi" to 750,
-        "yasto" to 800, "tyasto" to 750, "sadhai" to 800, "kahilepani" to 650,
-        "chitai" to 750, "bistarai" to 750, "pharkera" to 700,
-
-        // People & relationships
-        "sathi" to 850, "sathi ho" to 800, "sanchai" to 850, "sancho" to 850,
-        "sukhi" to 800, "khusi" to 850, "dukhi" to 750, "maya" to 850,
-        "prem" to 800, "logne" to 700, "swasni" to 700, "buhari" to 750,
-        "jethan" to 650, "kanchha" to 650, "aama" to 850,
-        "aamaa" to 950, "bua" to 900, "timro" to 900,
-
-        // Grammar particles
-        "lai" to 900, "le" to 900, "baata" to 850, "bata" to 850,
-        "sanga" to 800, "sangai" to 750, "maa" to 850, "ma" to 900,
-        "mathi" to 850, "tala" to 850, "agadi" to 800, "pachadi" to 750,
-        "najik" to 700, "para" to 700, "bhitra" to 800, "bahira" to 800,
-        "bichma" to 700, "chheu" to 700,
-
-        // Food & things
-        "bhat" to 850, "daal" to 800, "tarkari" to 750, "dahi" to 750,
-        "dudh" to 750, "chiya" to 800, "paisa" to 850, "paisa ho" to 750,
-        "gheu" to 650, "nun" to 700, "chini" to 700, "paani" to 850,
-        "kura ho" to 750,
-
-        // Places & nature
-        "gaun" to 700, "pahar" to 750, "nadi" to 700, "sahara" to 700,
-        "sahari" to 700, "banao" to 700, "jungle" to 700,
-
-        // Memorable facts
-        "thaha" to 800, "thaha chhaina" to 750, "thik" to 900,
-        "galti" to 850, "galat" to 800, "sahi" to 900, "sahi ho" to 800,
-        "bilkul" to 800, "thik chha" to 850, "laijau" to 750,
-        "line" to 800, "lau" to 850, "hera" to 800, "suna" to 750,
-        "aadha" to 750, "pura" to 750, "purnata" to 700,
-
-        // Common phrases (multi-word)
-        "mero naam" to 950, "timro naam" to 850, "k huncha" to 800,
-        "k bhayo" to 850, "k garnu" to 800, "thik cha" to 900,
-        "huss" to 900, "la" to 950, "dhanyabaad" to 800, "maaph" to 750,
-        "kasto cha" to 850, "thik thak" to 800, "namaste" to 1000,
-        "keta ho" to 850, "keto ho" to 800, "mero keta" to 800,
-
-        // Names / places / everyday words useful for emoji + autocorrect tests
-        "manche" to 800, "manxe" to 500, "chhu" to 750, "chha" to 1000,
-        "hey" to 700, "so" to 700, "hoina" to 850
+        "kata" to 850, "ma" to 1000, "timi" to 950, "hami" to 900,
+        "mero" to 950, "ramro" to 900, "ghar" to 900, "cha" to 1000,
+        "chaina" to 950, "garchu" to 900, "garcha" to 850, "janchu" to 800,
+        "aaja" to 900, "bholi" to 850, "hey" to 700, "haru" to 900,
+        "khusi" to 850, "khushi" to 850, "maya" to 850, "din" to 850,
+        "kitab" to 750, "dhanyabaad" to 950, "garna" to 900, "khana" to 800
     )
 
     private companion object {
@@ -671,6 +711,18 @@ class SuggestionEngine(private val context: android.content.Context) {
 
         /** Extra score added to favorites so they rank ahead of equal peers. */
         const val FAVORITE_BOOST = 0.6f
+
+        /** Prefix-layer value for variant expansions that don't prefix-match. */
+        const val VARIANT_BOOST = 0.55
+
+        /** Hard cap on prefix-scanned words so no single keystroke blows up. */
+        const val MAX_PREFIX_CANDIDATES = 300
+
+        /** Bound on the learned-words bucket; the lowest-count words are trimmed first. */
+        const val MAX_LEARNED_WORDS = 2000
+
+        /** Cached parsed asset so unit tests reuse the big JSON across engines. */
+        var companionVocab: Triple<List<Pair<String, Int>>, Map<String, List<String>>, Map<String, String>>? = null
 
         /** Common Nepali grammatical suffixes used by the no-space splitter. */
         val KNOWN_SUFFIXES = setOf(

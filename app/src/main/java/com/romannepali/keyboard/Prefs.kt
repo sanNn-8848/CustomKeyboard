@@ -8,12 +8,16 @@ object Prefs {
     private const val NAME = "merotype_prefs"
 
     private const val KEY_VIBRATION = "key_vibration"
+    private const val KEY_SOUND = "key_sound"
     private const val KEY_SUGGESTIONS = "word_suggestions"
     private const val KEY_DARK_THEME = "dark_theme"
     private const val KEY_NUMBER_ROW = "number_row"
 
     fun vibration(context: Context): Boolean =
         prefs(context).getBoolean(KEY_VIBRATION, true)
+
+    fun sound(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_SOUND, true)
 
     fun suggestions(context: Context): Boolean =
         prefs(context).getBoolean(KEY_SUGGESTIONS, true)
@@ -26,6 +30,10 @@ object Prefs {
 
     fun setVibration(context: Context, enabled: Boolean) {
         prefs(context).edit().putBoolean(KEY_VIBRATION, enabled).apply()
+    }
+
+    fun setSound(context: Context, enabled: Boolean) {
+        prefs(context).edit().putBoolean(KEY_SOUND, enabled).apply()
     }
 
     fun setSuggestions(context: Context, enabled: Boolean) {

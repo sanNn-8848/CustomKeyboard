@@ -25,7 +25,7 @@ import com.romannepali.keyboard.suggestion.SuggestionEngine
 class SettingsActivity : AppCompatActivity() {
 
     private val engine by lazy { SuggestionEngine(this) }
-    private val clipboardManager by lazy { ClipboardManager(this) }
+    private val clipboardManager by lazy { ClipboardManager.get(this) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         setTheme(
@@ -86,6 +86,12 @@ class SettingsActivity : AppCompatActivity() {
         vibration.isChecked = Prefs.vibration(this)
         vibration.setOnCheckedChangeListener { _, checked ->
             Prefs.setVibration(this, checked)
+        }
+
+        val keyAudio = findViewById<SwitchMaterial>(R.id.switch_key_audio)
+        keyAudio.isChecked = Prefs.sound(this)
+        keyAudio.setOnCheckedChangeListener { _, checked ->
+            Prefs.setSound(this, checked)
         }
 
         val suggestions = findViewById<SwitchMaterial>(R.id.switch_suggestions)
@@ -184,8 +190,6 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun setupClipboard() {
-        captureSystemClipboard()
-
         findViewById<MaterialButton>(R.id.btn_clear_clipboard).setOnClickListener {
             val cleared = clipboardManager.getHistory()
             if (cleared.isEmpty()) return@setOnClickListener
@@ -198,15 +202,6 @@ class SettingsActivity : AppCompatActivity() {
         }
 
         refreshClipboard()
-    }
-
-    private fun captureSystemClipboard() {
-        val system = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-        if (!system.hasPrimaryClip()) return
-        val text = system.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString()
-        if (!text.isNullOrBlank()) {
-            clipboardManager.copy(text)
-        }
     }
 
     private fun refreshClipboard() {

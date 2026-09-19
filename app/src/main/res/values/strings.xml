@@ -18,6 +18,7 @@
     <string name="section_keyboard">Keyboard</string>
     <string name="dark_theme">Dark theme</string>
     <string name="key_vibration">Key vibration</string>
+    <string name="key_audio">Key sounds</string>
     <string name="word_suggestions">Word suggestions</string>
     <string name="number_row">Number row</string>
     <string name="section_dictionary">Personal dictionary</string>

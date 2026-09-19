@@ -1,5 +1,36 @@
 # MeroType Changelog
 
+## [1.1.15] - 2026-09-19
+
+### Added
+- Launcher icon redesign: deep-violet gradient background with frosted key rows and a
+  coral key bearing the Devanagari क + typing caret, rendered at all five densities
+- Press animation: keys squash 6% on touch-down and spring back with a slight overshoot
+- Big key pop-up springs open (over-1.3x bounce) and collapses smoothly on release
+- Suggestion chips pop in from below with a quick stagger; identical suggestion sets are
+  no longer rebuilt/remounted on every keystroke
+- Gradient key faces (vertical sheen) for both dark and light themes and warm action keys
+
+### Changed
+- Clipboard history is now **manual only**: nothing is auto-saved anymore. The
+  system-clipboard listener and auto-capture on Settings open were removed; history is
+  filled only when you explicitly tap the keyboard's Copy or Cut chip. Copies made in
+  other apps, OTP auto-copy, smart-select, or long-press text no longer appear.
+
+### Fixed
+- "Deleted clip returns" bug: Settings and the IME each ran a separate in-memory
+  clipboard list over the same prefs file, so a stale list could resurrect a deleted
+  item. ClipboardManager is now a single app-wide singleton with a monotonic revision
+  counter that re-syncs from storage before every mutation.
+- Repeated clip handling: duplicate texts (case/quote/space-insensitive) are collapsed
+  to one entry on copy and on load.
+- Personal dictionary data loss: learning a previously saved or dictionary word no
+  longer overwrites its rank; removing a learned word (one-by-one or all) restores the
+  underlying dictionary/saved rank instead of deleting the word entirely. Learned list
+  is capped at 2000 entries and trims the lowest-count words first.
+- Next-word prediction no longer drops plain (non-variant) words — every candidate word
+  surfaces once, deduplicated.
+
 ## [1.1.14] - 2026-09-16
 
 ### Fixed

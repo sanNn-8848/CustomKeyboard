@@ -11,8 +11,10 @@ import android.view.inputmethod.EditorInfo
 import android.widget.Toast
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import com.romannepali.keyboard.clipboard.ClipAction
 import com.romannepali.keyboard.clipboard.ClipboardManager
 import com.romannepali.keyboard.clipboard.ClipboardPane
+import com.romannepali.keyboard.editing.TextEditor
 import com.romannepali.keyboard.emoji.EmojiPane
 import com.romannepali.keyboard.suggestion.PredictionContext
 import com.romannepali.keyboard.suggestion.SuggestionEngine
@@ -32,6 +34,7 @@ class RomanNepaliIME : InputMethodService() {
 
     private lateinit var suggestionEngine: SuggestionEngine
     private lateinit var clipboardManager: ClipboardManager
+    private val textEditor = TextEditor()
     private val currentWord = StringBuilder()
 
     // Deleted text remembered for the undo arrow.
@@ -52,39 +55,20 @@ class RomanNepaliIME : InputMethodService() {
     @Volatile
     private var suggestionJob = 0L
 
-    private var systemClipboardListener:
-        android.content.ClipboardManager.OnPrimaryClipChangedListener? = null
-
     override fun onCreate() {
         super.onCreate()
 
         suggestionEngine = SuggestionEngine(this)
-        clipboardManager = ClipboardManager(this)
-
-        // Watch the system clipboard so copies made in other apps (links, cut text,
-        // etc.) land in our clipboard pane. Android 10+ only allows this when this
-        // keyboard is the device's DEFAULT keyboard; otherwise we simply stay silent.
-        systemClipboardListener =
-            android.content.ClipboardManager.OnPrimaryClipChangedListener {
-                mainHandler.post { captureSystemClipboard() }
-            }
-        try {
-            val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE)
-                as? android.content.ClipboardManager
-            cm?.addPrimaryClipChangedListener(systemClipboardListener!!)
-        } catch (_: SecurityException) {
-            // Not the default IME — clipboard is off-limits.
-        }
+        clipboardManager = ClipboardManager.get(this)
 
         updateFullscreenMode()
     }
 
     /**
-     * Best-effort copy of whatever the user copied/cut in another app into our
-     * clipboard history. Never throws: silently no-ops when the platform forbids us.
+     * After the user explicitly uses the toolbar's Copy/Cut, read the resulting
+     * system clip into history. Manual only: nothing outside the keyboard triggers this.
      */
-    private fun captureSystemClipboard() {
-        if (isPasswordField()) return
+    private fun saveEditedClip() {
         try {
             val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE)
                 as? android.content.ClipboardManager
@@ -96,18 +80,10 @@ class RomanNepaliIME : InputMethodService() {
                 clipboardManager.copy(text)
             }
         } catch (_: SecurityException) {
-            // Android 10+ and we are not the default IME.
+            // Shortcut or restricted IME — nothing we can do.
         } catch (_: IllegalStateException) {
             // Primary clip not yet ready.
         }
-    }
-
-    private fun isPasswordField(): Boolean {
-        val editorInfo = currentInputEditorInfo ?: return false
-        val variation = editorInfo.inputType and InputType.TYPE_MASK_VARIATION
-        return variation == InputType.TYPE_TEXT_VARIATION_PASSWORD ||
-            variation == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD ||
-            variation == InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
     }
 
     override fun onEvaluateFullscreenMode(): Boolean {
@@ -257,23 +233,32 @@ class RomanNepaliIME : InputMethodService() {
                     }
 
                     "⌫" -> {
-                        val restored = deletedText
-                        val deleted = ic.getTextBeforeCursor(1, 0)?.toString() ?: ""
-                        deletedText = if (deleted == restored) restored + deleted else deleted
-
-                        if (currentWord.isNotEmpty()) {
-                            currentWord.deleteCharAt(currentWord.length - 1)
-                            updateSuggestions()
+                        val selected = ic.getSelectedText(0)?.toString().orEmpty()
+                        if (selected.isNotEmpty()) {
+                            // Deleting a highlighted range: replace it with nothing.
+                            deletedText = selected
+                            currentWord.clear()
+                            ic.commitText("", 1)
+                            suggestionBar?.clearSuggestions()
                         } else {
-                            // Backspace past a committed word: undo the context push
-                            // so re-typing the same word gets fresh predictions.
-                            if (deleted == " " && contextWords.isNotEmpty()) {
-                                contextWords.removeAt(contextWords.lastIndex)
-                            }
-                            updateSuggestions()
-                        }
+                            val restored = deletedText
+                            val deleted = ic.getTextBeforeCursor(1, 0)?.toString() ?: ""
+                            deletedText = if (deleted == restored) restored + deleted else deleted
 
-                        ic.deleteSurroundingText(1, 0)
+                            if (currentWord.isNotEmpty()) {
+                                currentWord.deleteCharAt(currentWord.length - 1)
+                                updateSuggestions()
+                            } else {
+                                // Backspace past a committed word: undo the context push
+                                // so re-typing the same word gets fresh predictions.
+                                if (deleted == " " && contextWords.isNotEmpty()) {
+                                    contextWords.removeAt(contextWords.lastIndex)
+                                }
+                                updateSuggestions()
+                            }
+
+                            ic.deleteSurroundingText(1, 0)
+                        }
                     }
 
                     "⇧" -> {
@@ -394,13 +379,33 @@ class RomanNepaliIME : InputMethodService() {
     )
 
     private fun refreshClipboardPane() {
-        // Pick up anything copied/cut in another app since the keyboard opened.
-        captureSystemClipboard()
         val dark = Prefs.darkTheme(this)
         clipboardPane?.bind(
             clipboardManager,
             dark,
-            onPaste = { text -> currentInputConnection?.commitText(text, 1) },
+            onAction = { action ->
+                val ic = currentInputConnection ?: return@bind
+                when (action) {
+                    ClipAction.SELECT_ALL -> textEditor.selectAll(ic)
+                    ClipAction.CUT -> {
+                        textEditor.cut(ic)
+                        saveEditedClip()
+                    }
+                    ClipAction.COPY -> {
+                        textEditor.copy(ic)
+                        saveEditedClip()
+                    }
+                    ClipAction.PASTE -> textEditor.paste(ic)
+                }
+                // Let the app perform the action (and set the system clip)
+                // before we re-read it into history.
+                mainHandler.postDelayed({ refreshClipboardPane() }, 150)
+            },
+            onPaste = { text ->
+                if (currentWord.isNotEmpty()) finishCurrentWord()
+                currentInputConnection?.commitText(text, 1)
+                suggestionBar?.clearSuggestions()
+            },
             onDelete = { text ->
                 clipboardManager.removeByText(text)
                 refreshClipboardPane()
@@ -550,8 +555,6 @@ class RomanNepaliIME : InputMethodService() {
         updateUndoUi()
         keyboardView?.applyThemeIfChanged()
         applyKeyboardTheme()
-        // If the user copied/cut something in another app, capture it now.
-        captureSystemClipboard()
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {
@@ -562,14 +565,6 @@ class RomanNepaliIME : InputMethodService() {
     override fun onDestroy() {
         suggestionJob++
         suggestionExecutor.shutdownNow()
-        try {
-            val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE)
-                as? android.content.ClipboardManager
-            cm?.removePrimaryClipChangedListener(systemClipboardListener)
-        } catch (_: SecurityException) {
-            // Ignore.
-        }
-        systemClipboardListener = null
         keyboardView?.onKeyPressed = null
         keyboardView = null
         suggestionBar = null

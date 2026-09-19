@@ -11,6 +11,7 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.animation.OvershootInterpolator
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageButton
@@ -54,6 +55,7 @@ class SuggestionBar @JvmOverloads constructor(
     private var downRawX = 0f
     private var downRawY = 0f
     private var dragActive = false
+    private var lastSuggestions: List<String> = emptyList()
 
     private val longPressRunnable = Runnable {
         val chip = pendingChip ?: return@Runnable
@@ -156,6 +158,8 @@ class SuggestionBar @JvmOverloads constructor(
     }
 
     fun showSuggestions(suggestions: List<String>) {
+        if (suggestions == lastSuggestions) return
+        lastSuggestions = suggestions
         chipsContainer?.let { container ->
             container.removeAllViews()
             suggestions.forEachIndexed { index, text ->
@@ -185,11 +189,33 @@ class SuggestionBar @JvmOverloads constructor(
                 }
             }
             chipsScroll?.scrollTo(0, 0)
+            // Chips spring in from below with a quick stagger.
+            container.post {
+                for (i in 0 until container.childCount) {
+                    val chip = container.getChildAt(i)
+                    chip.pivotX = chip.width / 2f
+                    chip.pivotY = chip.height / 2f
+                    chip.alpha = 0f
+                    chip.scaleX = 0.7f
+                    chip.scaleY = 0.7f
+                    chip.translationY = dp(8).toFloat()
+                    chip.animate()
+                        .alpha(1f)
+                        .scaleX(1f)
+                        .scaleY(1f)
+                        .translationY(0f)
+                        .setStartDelay(i * 24L)
+                        .setDuration(200)
+                        .setInterpolator(OvershootInterpolator(2.2f))
+                        .start()
+                }
+            }
         }
     }
 
     fun clearSuggestions() {
         chipsContainer?.removeAllViews()
+        lastSuggestions = emptyList()
         mainHandler.removeCallbacks(longPressRunnable)
         pendingChip = null
         restoreChip()

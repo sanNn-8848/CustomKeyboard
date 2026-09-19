@@ -11,6 +11,8 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import com.romannepali.keyboard.R
 
+enum class ClipAction { SELECT_ALL, CUT, COPY, PASTE }
+
 /**
  * Slim horizontal pane that shows the most recent clipboard clips.
  * Tap a clip → its text is pasted into the editor. Tap the ✕ → the clip is removed.
@@ -28,7 +30,7 @@ class ClipboardPane @JvmOverloads constructor(
     }
 
     private val emptyLabel = TextView(context).apply {
-        text = "Nothing copied yet."
+        text = context.getString(R.string.no_clipboard)
         textSize = 13f
         setTextColor(resources.getColor(R.color.icon_light, null))
         setPadding(dp(12), dp(6), dp(12), dp(6))
@@ -40,23 +42,49 @@ class ClipboardPane @JvmOverloads constructor(
         addView(container)
     }
 
-    /** @param onPaste called with the clip text when the user taps a chip. */
+    /** @param onAction editing toolbar: select all / cut / copy / paste.
+     *  @param onPaste called with the clip text when the user taps a chip. */
     fun bind(
         manager: ClipboardManager,
         dark: Boolean,
+        onAction: (ClipAction) -> Unit,
         onPaste: (String) -> Unit,
         onDelete: (String) -> Unit
     ) {
         container.removeAllViews()
+        val textRes = if (dark) R.color.letter_text_dark else R.color.letter_text_light
+        val chipBg = if (dark) R.drawable.bg_suggestion_chip_dark else R.drawable.bg_suggestion_chip_light
+        val tint = resources.getColor(if (dark) R.color.icon_dark else R.color.icon_light, null)
+
+        fun actionChip(label: String, click: () -> Unit) {
+            container.addView(
+                TextView(context).apply {
+                    text = label
+                    background = resources.getDrawable(chipBg, null)
+                    setTextColor(resources.getColor(textRes, null))
+                    textSize = 13f
+                    gravity = Gravity.CENTER
+                    isSingleLine = true
+                    setPadding(dp(10), dp(6), dp(10), dp(6))
+                    setOnClickListener { click() }
+                },
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    dp(32)
+                ).apply { marginStart = dp(2); marginEnd = dp(2) }
+            )
+        }
+
+        actionChip("Select all") { onAction(ClipAction.SELECT_ALL) }
+        actionChip("Cut") { onAction(ClipAction.CUT) }
+        actionChip("Copy") { onAction(ClipAction.COPY) }
+        actionChip("Paste") { onAction(ClipAction.PASTE) }
+
         val items = manager.getHistory().take(20)
         if (items.isEmpty()) {
             container.addView(emptyLabel)
             return
         }
-
-        val textRes = if (dark) R.color.letter_text_dark else R.color.letter_text_light
-        val chipBg = if (dark) R.drawable.bg_suggestion_chip_dark else R.drawable.bg_suggestion_chip_light
-        val tint = resources.getColor(if (dark) R.color.icon_dark else R.color.icon_light, null)
 
         items.forEach { clip ->
             val display = clip.text.replace("\n", " ").trim()

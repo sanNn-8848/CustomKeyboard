@@ -105,6 +105,13 @@
                         android:textColor="?android:attr/textColorPrimary" />
 
                     <com.google.android.material.switchmaterial.SwitchMaterial
+                        android:id="@+id/switch_key_audio"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/key_audio"
+                        android:textColor="?android:attr/textColorPrimary" />
+
+                    <com.google.android.material.switchmaterial.SwitchMaterial
                         android:id="@+id/switch_suggestions"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"

@@ -38,7 +38,7 @@
         <FrameLayout
             android:id="@+id/feature_pane"
             android:layout_width="match_parent"
-            android:layout_height="48dp"
+            android:layout_height="42dp"
             android:background="@drawable/bg_prediction_bar">
 
             <com.romannepali.keyboard.SuggestionBar

@@ -8,8 +8,8 @@
         android:layout_height="match_parent"
         android:orientation="horizontal"
         android:gravity="center_vertical"
-        android:paddingLeft="4dp"
-        android:paddingRight="4dp">
+        android:paddingLeft="8dp"
+        android:paddingRight="8dp">
 
         <ImageButton
             android:id="@+id/clock_tap_undo"
