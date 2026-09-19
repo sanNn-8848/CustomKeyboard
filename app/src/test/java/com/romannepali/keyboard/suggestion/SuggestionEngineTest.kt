@@ -222,4 +222,13 @@ class SuggestionEngineTest {
         val novel = engine.predict(PredictionContext("bhat"), limit = 5).map { it.word }
         assertFalse("novel learned word should vanish: $novel", novel.contains("bhatindaun"))
     }
+
+    @Test
+    fun removingPersonalWord_deletesItAcrossStores() {
+        engine.addPersonalWord("meroketo")
+        engine.removePersonalWord("meroketo")
+        assertFalse("saved list still holds the word", engine.getSavedWords().contains("meroketo"))
+        val words = engine.predict(PredictionContext("merok"), limit = 5).map { it.word }
+        assertFalse("word still predicted after removal: $words", words.contains("meroketo"))
+    }
 }

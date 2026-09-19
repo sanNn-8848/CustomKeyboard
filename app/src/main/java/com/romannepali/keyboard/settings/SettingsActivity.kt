@@ -15,6 +15,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.slider.Slider
 import com.google.android.material.snackbar.Snackbar
 import com.google.android.material.switchmaterial.SwitchMaterial
 import com.romannepali.keyboard.Prefs
@@ -100,11 +101,20 @@ class SettingsActivity : AppCompatActivity() {
             Prefs.setSuggestions(this, checked)
         }
 
-        val numberRow = findViewById<SwitchMaterial>(R.id.switch_number_row)
-        numberRow.isChecked = Prefs.numberRow(this)
-        numberRow.setOnCheckedChangeListener { _, checked ->
-            Prefs.setNumberRow(this, checked)
+        val sizeSlider = findViewById<Slider>(R.id.slider_keyboard_size)
+        val sizeValue = findViewById<TextView>(R.id.text_keyboard_size_value)
+        sizeSlider.value = Prefs.keyboardSize(this).toFloat()
+        sizeValue.text = getString(keyboardSizeLabel(Prefs.keyboardSize(this)))
+        sizeSlider.addOnChangeListener { _, value, _ ->
+            Prefs.setKeyboardSize(this, value.toInt())
+            sizeValue.text = getString(keyboardSizeLabel(value.toInt()))
         }
+    }
+
+    private fun keyboardSizeLabel(size: Int): Int = when {
+        size < 35 -> R.string.keyboard_size_small
+        size > 65 -> R.string.keyboard_size_large
+        else -> R.string.keyboard_size_normal
     }
 
     private fun setupDictionary() {
@@ -146,7 +156,7 @@ class SettingsActivity : AppCompatActivity() {
             R.id.saved_list,
             R.id.saved_empty,
             engine.getSavedWords().map { word ->
-                Triple(word, "") { _, w ->
+                Triple(word, word) { _, w ->
                     engine.removePersonalWord(w)
                     refreshDictionary()
                     snackbar(getString(R.string.word_removed_confirmed, w)) {

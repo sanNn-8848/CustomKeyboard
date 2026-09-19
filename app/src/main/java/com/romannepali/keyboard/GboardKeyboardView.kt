@@ -111,8 +111,15 @@ class GboardKeyboardView @JvmOverloads constructor(
     private val KEY_MIN = 30
     private val KEY_MAX = 55
     private val KEY_EDGE = 2          // per-side margin -> 4dp inter-key gap
-    private val LETTER_ROW = 48       // key height band 40-52dp
-    private val LETTER_ROW_LANDSCAPE = 44
+    private val LETTER_ROW = 44
+    private val LETTER_ROW_LANDSCAPE = 42
+
+    // User keyboard-size slider: 0..100 -> 0.80x .. 1.25x (50 normal = 1.0x).
+    private val SIZE_MIN = 0.80f
+    private val SIZE_SPAN = 0.45f
+
+    private fun sizeFactor(): Float =
+        SIZE_MIN + Prefs.keyboardSize(context) / 100f * SIZE_SPAN
     private val CHIN = 20             // transparent safety chin for nav gestures
 
     // Tactile spec: 250ms long-press, tap vs 40ms hold-and-repeat for backspace.
@@ -129,7 +136,8 @@ class GboardKeyboardView @JvmOverloads constructor(
 
     private var isSymbols = false
     private var darkTheme = true
-    private var numberRowEnabled = Prefs.numberRow(context)
+
+    private var lastAppliedSize = Prefs.keyboardSize(context)
 
     private var soundPool: SoundPool? = null
     private var soundLetter = 0
@@ -168,16 +176,13 @@ class GboardKeyboardView @JvmOverloads constructor(
             SOUND_DELETE -> soundDelete
             else -> soundLetter
         }
-        soundPool?.play(stream, 0.8f, 0.8f, 1, 0, 1f)
+        // Slightly randomize the playback rate so fast typing sounds like an
+        // organic "tik tik tik" instead of a machine-gun of identical clicks.
+        val rate = 0.94f + (System.nanoTime().toInt() % 120) / 1000f
+        soundPool?.play(stream, 0.9f, 0.9f, 1, 0, rate)
     }
 
     // Haptics: crisp impulse for letters, longer/stronger for structural keys.
-    private fun hapticTap(view: View) {
-        if (Prefs.vibration(context)) {
-            view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-        }
-    }
-
     private fun hapticStrong(view: View) {
         if (Prefs.vibration(context)) {
             view.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
@@ -227,8 +232,8 @@ class GboardKeyboardView @JvmOverloads constructor(
 
         val rows = if (isSymbols) symbolRows else lettersRows
 
-        // Optional top number row (off by default; toggled in settings).
-        if (numberRowEnabled && !isSymbols) {
+        // Always-on number row (main layout, matching the symbol page's digits).
+        if (!isSymbols) {
             val digitRow = LinearLayout(context).apply {
                 orientation = HORIZONTAL
                 gravity = Gravity.CENTER
@@ -284,7 +289,9 @@ class GboardKeyboardView @JvmOverloads constructor(
 
         refreshKeyLabels()
 
-        // Keep keys at full row height: grow the keyboard when a 5th row is shown.
+        // Preferred height (scale + orientation aware). The view's own measure
+        // clamps to whatever the window actually allows, so the keyboard always
+        // fits and stays docked to the bottom edge.
         layoutParams?.let { lp ->
             lp.height = keyboardHeightPx()
             layoutParams = lp
@@ -293,17 +300,33 @@ class GboardKeyboardView @JvmOverloads constructor(
 
     private fun keyboardHeightPx(): Int {
         val landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-        val letterRow = if (landscape) dp(LETTER_ROW_LANDSCAPE) else dp(LETTER_ROW)
-        val withNumber = numberRowEnabled && !isSymbols
+        val letterRow = (if (landscape) dp(LETTER_ROW_LANDSCAPE) else dp(LETTER_ROW)) * sizeFactor()
+        val withNumber = !isSymbols
         val totalWeight = 4f + if (withNumber) NUMBER_ROW_WEIGHT else 0f
         return (letterRow * totalWeight).toInt() + dp(CHIN)
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        rebuild()
+    }
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+        // The keyboard fills whatever height the window allows, but never grows
+        // past the preferred size (so it can't swallow the whole screen).
+        val preferred = keyboardHeightPx()
+        if (measuredHeight > preferred) {
+            setMeasuredDimension(measuredWidth, preferred)
+        }
     }
 
     /**
      * Computes the keyboard's horizontal inset from the actual screen width.
      *
      * Key width = (available width - total gaps) / keys in row, clamped to
-     * [KEY_MIN, KEY_MAX]. If the natural width falls outside that band, the
+     * [KEY_MIN, KEY_MAX] scaled by the user's keyboard size. If the natural
+     * width falls outside that band, the
      * side margin absorbs the slack (landscape/tablet -> centered keyboard,
      * tiny screens -> margins kept at SIDE_MARGIN_MIN). Weights then apply the
      * same scale to every row, so columns stay aligned.
@@ -315,7 +338,10 @@ class GboardKeyboardView @JvmOverloads constructor(
         val edgePx = dp(KEY_EDGE) * 2
         val naturalSlot = (screenW - 2 * defaultMargin) / slots
         val visible = naturalSlot - edgePx
-        val unit = visible.coerceIn(dp(KEY_MIN), dp(KEY_MAX))
+        val unit = visible.coerceIn(
+            (dp(KEY_MIN) * sizeFactor()).toInt(),
+            (dp(KEY_MAX) * sizeFactor()).toInt()
+        )
         if (unit == visible) return defaultMargin
         val wanted = (screenW - slots * (unit + edgePx)) / 2
         return maxOf(wanted, dp(SIDE_MARGIN_MIN))
@@ -432,7 +458,7 @@ class GboardKeyboardView @JvmOverloads constructor(
 
         val main = TextView(context).apply {
             text = label
-            textSize = if (isLetter) 18f else 17f
+            textSize = (if (isLetter) 18f else 17f) * sizeFactor()
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             setTextColor(letterTextColor())
             gravity = Gravity.CENTER
@@ -448,7 +474,7 @@ class GboardKeyboardView @JvmOverloads constructor(
         val tag: TextView? = altTag?.let { alt ->
             TextView(context).apply {
                 text = alt
-                textSize = 10f
+                textSize = 10f * sizeFactor()
                 typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                 setTextColor(secondaryTextColor())
                 alpha = 0.5f
@@ -467,7 +493,7 @@ class GboardKeyboardView @JvmOverloads constructor(
         // Press pop-up: 130% height cap rising ~8dp above the finger, 15ms fade-out.
         val popup = TextView(context).apply {
             text = label
-            textSize = 20f
+            textSize = 20f * sizeFactor()
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             setTextColor(letterTextColor())
             gravity = Gravity.CENTER
@@ -504,7 +530,6 @@ class GboardKeyboardView @JvmOverloads constructor(
                 MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
                     key.isPressed = true
                     pressScaleOn(key)
-                    hapticTap(key)
                     playSound(SOUND_LETTER)
                     onPress()
                     showPopup(popup, main.text, key)
@@ -632,7 +657,6 @@ class GboardKeyboardView @JvmOverloads constructor(
         val repeatRunnable = object : Runnable {
             override fun run() {
                 if (longPressFired && repeat) {
-                    hapticTap(key)
                     playSound(sound)
                     click()
                     key.postDelayed(this, REPEAT_INTERVAL)
@@ -655,7 +679,6 @@ class GboardKeyboardView @JvmOverloads constructor(
                 MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
                     key.isPressed = true
                     pressScaleOn(key)
-                    if (strong) hapticStrong(key) else hapticTap(key)
                     playSound(sound)
                     longPressFired = false
                     click()
@@ -699,7 +722,7 @@ class GboardKeyboardView @JvmOverloads constructor(
     private fun addSpaceKey(row: LinearLayout, weight: Float) {
         val key = styleKey(Button(context), false)
         key.text = context.getString(R.string.space_label)
-        key.textSize = 13f
+        key.textSize = 13f * sizeFactor()
         key.setTextColor(spaceLabelColor())
         key.gravity = Gravity.CENTER
         key.layoutParams = LinearLayout.LayoutParams(
@@ -723,7 +746,6 @@ class GboardKeyboardView @JvmOverloads constructor(
                 MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
                     key.isPressed = true
                     pressScaleOn(key)
-                    hapticStrong(key)
                     playSound(SOUND_SPACE)
                     onKeyPressed?.invoke(" ")
                     // Only the initial finger can arm the long-press keyboard switcher.
@@ -778,7 +800,7 @@ class GboardKeyboardView @JvmOverloads constructor(
         button.gravity = Gravity.CENTER
         button.setIncludeFontPadding(false)
         button.typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-        button.textSize = if (isLetter) 18f else 15f
+        button.textSize = (if (isLetter) 18f else 15f) * sizeFactor()
         button.setTextColor(letterTextColor())
         button.background = resources.getDrawable(
             if (isLetter) {
@@ -845,10 +867,10 @@ class GboardKeyboardView @JvmOverloads constructor(
 
     fun applyThemeIfChanged() {
         val preferred = Prefs.darkTheme(context)
-        val preferredNumberRow = Prefs.numberRow(context)
-        if (preferred != darkTheme || preferredNumberRow != numberRowEnabled) {
+        val size = Prefs.keyboardSize(context)
+        if (preferred != darkTheme || size != lastAppliedSize) {
             darkTheme = preferred
-            numberRowEnabled = preferredNumberRow
+            lastAppliedSize = size
             rebuild()
         }
     }

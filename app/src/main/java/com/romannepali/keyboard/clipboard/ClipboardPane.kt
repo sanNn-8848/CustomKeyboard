@@ -5,6 +5,7 @@ import android.content.res.ColorStateList
 import android.util.AttributeSet
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.animation.OvershootInterpolator
 import android.widget.HorizontalScrollView
 import android.widget.ImageButton
 import android.widget.LinearLayout
@@ -38,9 +39,14 @@ class ClipboardPane @JvmOverloads constructor(
 
     init {
         isHorizontalScrollBarEnabled = false
+        isSmoothScrollingEnabled = true
         overScrollMode = OVER_SCROLL_NEVER
         addView(container)
     }
+
+    // Skip pointless rebuilds: rebinding the exact same history on every pane
+    // refresh is what made the strip flicker / stutter while scrolling.
+    private var lastHistorySignature: String? = null
 
     /** @param onAction editing toolbar: select all / cut / copy / paste.
      *  @param onPaste called with the clip text when the user taps a chip. */
@@ -51,10 +57,16 @@ class ClipboardPane @JvmOverloads constructor(
         onPaste: (String) -> Unit,
         onDelete: (String) -> Unit
     ) {
-        container.removeAllViews()
         val textRes = if (dark) R.color.letter_text_dark else R.color.letter_text_light
         val chipBg = if (dark) R.drawable.bg_suggestion_chip_dark else R.drawable.bg_suggestion_chip_light
         val tint = resources.getColor(if (dark) R.color.icon_dark else R.color.icon_light, null)
+
+        val items = manager.getHistory().take(20)
+        val signature = items.joinToString("\u0000") { it.text }
+        if (signature == lastHistorySignature) return
+        lastHistorySignature = signature
+
+        container.removeAllViews()
 
         fun actionChip(label: String, click: () -> Unit) {
             container.addView(
@@ -80,13 +92,13 @@ class ClipboardPane @JvmOverloads constructor(
         actionChip("Copy") { onAction(ClipAction.COPY) }
         actionChip("Paste") { onAction(ClipAction.PASTE) }
 
-        val items = manager.getHistory().take(20)
         if (items.isEmpty()) {
             container.addView(emptyLabel)
+            post { smoothScrollTo(0, 0) }
             return
         }
 
-        items.forEach { clip ->
+        items.forEachIndexed { index, clip ->
             val display = clip.text.replace("\n", " ").trim()
             val chip = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -117,11 +129,26 @@ class ClipboardPane @JvmOverloads constructor(
             }
             chip.addView(remove, LinearLayout.LayoutParams(dp(24), dp(24)))
 
+            chip.alpha = 0f
+            chip.scaleX = 0.8f
+            chip.scaleY = 0.8f
+            chip.animate()
+                .alpha(1f)
+                .scaleX(1f)
+                .scaleY(1f)
+                .setStartDelay(index * 12L)
+                .setDuration(160)
+                .setInterpolator(OvershootInterpolator(1.6f))
+                .start()
+
             container.addView(chip, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 dp(32)
             ).apply { marginStart = dp(2); marginEnd = dp(2) })
         }
+
+        // Glide back to the first clip instead of snapping.
+        post { smoothScrollTo(0, 0) }
     }
 
     private fun dp(v: Int): Int = TypedValue.applyDimension(

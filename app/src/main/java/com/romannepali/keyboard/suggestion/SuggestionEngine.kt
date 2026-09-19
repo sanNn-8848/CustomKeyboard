@@ -448,11 +448,12 @@ class SuggestionEngine(private val context: android.content.Context) {
     }
 
     fun removePersonalWord(word: String) {
+        val clean = word.trim().lowercase()
         val saved = store.loadSaved().toMutableList()
-        if (saved.remove(word)) {
+        if (saved.remove(clean)) {
             store.saveSaved(saved)
         }
-        restoreTrieEntry(word)
+        restoreTrieEntry(clean)
         knownWordsCache = null
     }
 

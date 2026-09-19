@@ -20,7 +20,11 @@
     <string name="key_vibration">Key vibration</string>
     <string name="key_audio">Key sounds</string>
     <string name="word_suggestions">Word suggestions</string>
-    <string name="number_row">Number row</string>
+    <string name="keyboard_size">Keyboard size</string>
+    <string name="keyboard_size_hint">Drag to resize the keys</string>
+    <string name="keyboard_size_small">Small</string>
+    <string name="keyboard_size_normal">Normal</string>
+    <string name="keyboard_size_large">Large</string>
     <string name="section_dictionary">Personal dictionary</string>
     <string name="dictionary_hint">Your words always rank first and are never wiped by \u201cclear learned\u201d.</string>
     <string name="word_input_hint">Add your own word…</string>

@@ -1,5 +1,31 @@
 # MeroType Changelog
 
+## [1.1.16] - 2026-09-19
+
+### Added
+- Emoji strip now remembers which emoji you actually use: your most-used emoji are
+  tracked and rise to the front (positions 1-4), so your favourites are one tap away
+- Bigger emoji set (48 emoji: adds cat/dog/unicorn, fruit, shrug, heart-hands, fire,
+  runner, celebration, coffee, storm, lightbulb, graduation, football, four-leaf clover …)
+- Crisp "tik tik tik" key feedback: per-tap vibration is gone, and every key click is
+  now slightly pitch-randomized so fast typing sounds natural instead of robotic
+- **Keyboard size slider** in Settings: drag to resize the keys from Small to Large;
+  key height, key width and key labels all scale together, in both portrait and
+  landscape, tuned per screen so the keyboard always fits comfortably
+- The number row is now the default main layout (always on) — the old "Number row"
+  settings toggle has been removed
+
+### Changed
+- Suggestion, clipboard and emoji strips scroll buttery-smooth: identical content is no
+  longer rebuilt on every refresh, every strip glides back to the start instead of
+  snapping, and chips pop in with a soft staggered entrance
+- The keyboard now sizes itself to fit the app window: it stays docked to the bottom
+  edge like Gboard, never gets squashed small in a fresh app, and never swallows the
+  screen. Rotation resizing is smoother, and the keyboard re-lays-out cleanly when you
+  turn the phone
+- Fixed: personal words added in Settings could not be deleted — the word is now
+  removed (with the same undo as the other lists), case-insensitively
+
 ## [1.1.15] - 2026-09-19
 
 ### Added

@@ -188,7 +188,7 @@ class SuggestionBar @JvmOverloads constructor(
                     container.addView(this, lp)
                 }
             }
-            chipsScroll?.scrollTo(0, 0)
+            chipsScroll?.post { chipsScroll?.smoothScrollTo(0, 0) }
             // Chips spring in from below with a quick stagger.
             container.post {
                 for (i in 0 until container.childCount) {
