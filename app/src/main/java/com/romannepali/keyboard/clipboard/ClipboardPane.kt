@@ -5,9 +5,6 @@ import android.content.res.ColorStateList
 import android.util.AttributeSet
 import android.util.TypedValue
 import android.view.Gravity
-import android.view.MotionEvent
-import android.view.View
-import android.view.ViewConfiguration
 import android.view.animation.OvershootInterpolator
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
@@ -15,13 +12,14 @@ import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.romannepali.keyboard.R
-import kotlin.math.abs
 
 enum class ClipAction { SELECT_ALL, CUT, COPY, PASTE }
 
 /**
  * Slim horizontal pane that shows the most recent clipboard clips.
  * Tap a clip → its text is pasted into the editor. Tap the ✕ → the clip is removed.
+ * The "Actions" button opens a floating glass panel (above the keyboard) with the
+ * four editing actions as static, directly-tappable buttons.
  */
 class ClipboardPane @JvmOverloads constructor(
     context: Context,
@@ -52,6 +50,10 @@ class ClipboardPane @JvmOverloads constructor(
     // Skip pointless rebuilds: rebinding the exact same history on every pane
     // refresh is what made the strip flicker / stutter while scrolling.
     private var lastHistorySignature: String? = null
+    private var lastHasSelection = false
+
+    private var actionPanel: GlassActionPanel? = null
+    private var panelOpen = false
 
     /** @param onAction editing toolbar: select all / cut / copy / paste.
      *  @param onPaste called with the clip text when the user taps a chip.
@@ -65,40 +67,51 @@ class ClipboardPane @JvmOverloads constructor(
         onPaste: (String) -> Unit,
         onDelete: (String) -> Unit
     ) {
+        val items = manager.getHistory().take(20)
+        val signature = items.joinToString("\u0000") { it.text }
+        if (signature == lastHistorySignature) {
+            // Keep the open action panel in sync with the selection state.
+            if (lastHasSelection != hasSelection) {
+                lastHasSelection = hasSelection
+                actionPanel?.refreshEnabled(actionItems(hasSelection))
+            }
+            return
+        }
+        lastHistorySignature = signature
+        lastHasSelection = hasSelection
+        closeActionPanel()
+
         val textRes = if (dark) R.color.letter_text_dark else R.color.letter_text_light
         val chipBg = if (dark) R.drawable.bg_suggestion_chip_dark else R.drawable.bg_suggestion_chip_light
         val tint = resources.getColor(if (dark) R.color.icon_dark else R.color.icon_light, null)
 
-        val items = manager.getHistory().take(20)
-        val signature = items.joinToString("\u0000") { it.text }
-        if (signature == lastHistorySignature) return
-        lastHistorySignature = signature
-
         container.removeAllViews()
 
-        fun actionChip(label: String, click: () -> Unit) {
-            container.addView(
-                TextView(context).apply {
-                    text = label
-                    background = resources.getDrawable(chipBg, null)
-                    setTextColor(resources.getColor(textRes, null))
-                    textSize = 13f
-                    gravity = Gravity.CENTER
-                    isSingleLine = true
-                    setPadding(dp(10), dp(6), dp(10), dp(6))
-                    setOnClickListener { click() }
-                },
-                LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                    dp(32)
-                ).apply { marginStart = dp(2); marginEnd = dp(2) }
-            )
-        }
-
-        actionChip("Select all") { onAction(ClipAction.SELECT_ALL) }
-        actionChip("Cut") { onAction(ClipAction.CUT) }
-        actionChip("Copy") { onAction(ClipAction.COPY) }
-        actionChip("Paste") { onAction(ClipAction.PASTE) }
+        // One "Actions" button instead of four scattered chips: tapping it flips
+        // the floating glass panel with Select All / Copy / Paste / Cut.
+        container.addView(
+            TextView(context).apply {
+                text = "Actions"
+                background = resources.getDrawable(chipBg, null)
+                setTextColor(resources.getColor(textRes, null))
+                setCompoundDrawablesWithIntrinsicBounds(
+                    resources.getDrawable(R.drawable.ic_actions, null), null, null, null
+                )
+                compoundDrawablePadding = dp(4)
+                getCompoundDrawables()?.firstOrNull()?.setTint(tint)
+                textSize = 13f
+                gravity = Gravity.CENTER
+                isSingleLine = true
+                setPadding(dp(10), dp(6), dp(10), dp(6))
+                setOnClickListener {
+                    if (panelOpen) closeActionPanel() else openActionPanel(dark, hasSelection, onAction)
+                }
+            },
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                dp(32)
+            ).apply { marginStart = dp(2); marginEnd = dp(4) }
+        )
 
         if (items.isEmpty()) {
             container.addView(emptyLabel)
@@ -113,15 +126,8 @@ class ClipboardPane @JvmOverloads constructor(
                 gravity = Gravity.CENTER_VERTICAL
                 background = resources.getDrawable(chipBg, null)
                 setPadding(dp(4), 0, dp(2), 0)
+                setOnClickListener { onPaste(clip.text) }
             }
-            attachClipGesture(
-                chip,
-                dark,
-                clipboardEmpty = items.isEmpty(),
-                hasSelection = hasSelection,
-                onTap = { onPaste(clip.text) },
-                onAction = onAction
-            )
 
             val label = TextView(context).apply {
                 text = if (display.length > 32) display.take(32) + "\u2026" else display
@@ -167,130 +173,57 @@ class ClipboardPane @JvmOverloads constructor(
     }
 
     // ------------------------------------------------------------------
-    // Gesture selection menu
+    // Floating glass action panel
     // ------------------------------------------------------------------
 
-    private var gestureMenu: GlassGestureMenu? = null
-    private var gestureMenuTopY = 0
-
-    /**
-     * Tap a clip chip to paste; hold it and the glass gesture menu opens with
-     * the editing actions. While it is open the finger steers the highlight
-     * pill; releasing on a row runs that action, releasing nowhere cancels.
-     */
-    private fun attachClipGesture(
-        chip: View,
-        dark: Boolean,
-        clipboardEmpty: Boolean,
-        hasSelection: Boolean,
-        onTap: () -> Unit,
-        onAction: (ClipAction) -> Unit
-    ) {
-        var lastY = 0f
-        var longFired = false
-        val slop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
-        val fire = Runnable {
-            longFired = true
-            // Keep the strip's scroll view from stealing the live gesture.
-            parent?.requestDisallowInterceptTouchEvent(true)
-            openClipMenu(chip, dark, clipboardEmpty, hasSelection, onAction)
-        }
-        chip.setOnTouchListener { v, event ->
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    lastY = event.rawY
-                    longFired = false
-                    v.removeCallbacks(fire)
-                    v.postDelayed(fire, 280L)
-                    true
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    if (longFired) {
-                        gestureMenu?.let { it.onGestureMove(event.rawY - gestureMenuTopY) }
-                    } else if (abs(event.rawY - lastY) > slop) {
-                        v.removeCallbacks(fire)
-                    }
-                    true
-                }
-                MotionEvent.ACTION_UP -> {
-                    v.removeCallbacks(fire)
-                    if (longFired) {
-                        gestureMenu?.let { m ->
-                            val chosen = m.activateItem()
-                            dismissMenu(chosen?.let { c -> { onAction(ClipAction.values()[c.id]) } })
-                        }
-                    } else {
-                        onTap()
-                    }
-                    true
-                }
-                MotionEvent.ACTION_CANCEL -> {
-                    v.removeCallbacks(fire)
-                    dismissMenu(null)
-                    true
-                }
-                else -> true
-            }
-        }
-    }
-
-    /** Anchors the floating glass menu next to the pressed clip. */
-    private fun openClipMenu(
-        chip: View,
-        dark: Boolean,
-        clipboardEmpty: Boolean,
-        hasSelection: Boolean,
-        onAction: (ClipAction) -> Unit
-    ) {
-        val root = rootView as? FrameLayout ?: return
-        if (gestureMenu != null) return
-
-        val itemList = listOf(
-            GestureMenuItem(
-                ClipAction.PASTE.ordinal, R.drawable.ic_content_paste,
-                "Paste", enabled = !clipboardEmpty
-            ),
-            GestureMenuItem(
-                ClipAction.COPY.ordinal, R.drawable.ic_content_copy,
-                "Copy", enabled = hasSelection
-            ),
-            GestureMenuItem(
+    private fun actionItems(hasSelection: Boolean): List<ActionItem> {
+        val historyNonEmpty = lastHistorySignature != null &&
+            lastHistorySignature!!.isNotEmpty()
+        return listOf(
+            ActionItem(
                 ClipAction.SELECT_ALL.ordinal, R.drawable.ic_select_all,
                 "Select all", enabled = true
             ),
-            GestureMenuItem(
+            ActionItem(
+                ClipAction.COPY.ordinal, R.drawable.ic_content_copy,
+                "Copy", enabled = hasSelection
+            ),
+            ActionItem(
+                ClipAction.PASTE.ordinal, R.drawable.ic_content_paste,
+                "Paste", enabled = historyNonEmpty
+            ),
+            ActionItem(
                 ClipAction.CUT.ordinal, R.drawable.ic_content_cut,
                 "Cut", enabled = hasSelection
             )
         )
+    }
 
-        val menu = GlassGestureMenu(context)
-        menu.setTheme(dark)
-        menu.bind(itemList, defaultIndex = 2)
+    /** Anchors the glass panel just above the keyboard, centered. */
+    private fun openActionPanel(
+        dark: Boolean,
+        hasSelection: Boolean,
+        onAction: (ClipAction) -> Unit
+    ) {
+        val root = rootView as? FrameLayout ?: return
+        closeActionPanel()
 
-        val w = menu.menuWidthPx()
-        val h = menu.menuHeightPx()
-
-        val rootLoc = IntArray(2)
-        root.getLocationInWindow(rootLoc)
-        val chipLoc = IntArray(2)
-        chip.getLocationInWindow(chipLoc)
-
-        val chipCenterX = chipLoc[0] - rootLoc[0] + chip.width / 2
-        val anchorTop = chipLoc[1] - rootLoc[1]
-        val gap = dp(8)
-
-        val left = (chipCenterX - w / 2).coerceIn(0, (root.width - w).coerceAtLeast(0))
-        val top = if (anchorTop - gap >= h) {
-            anchorTop - gap - h
-        } else {
-            (anchorTop + chip.height + gap).coerceAtMost((root.height - h).coerceAtLeast(0))
+        val panel = GlassActionPanel(context)
+        panel.setTheme(dark)
+        panel.bind(actionItems(hasSelection)) { id ->
+            closeActionPanel()
+            onAction(ClipAction.values()[id])
         }
 
-        menu.pivotX = (w / 2).toFloat()
-        menu.pivotY = 0f
+        val w = panel.menuWidthPx()
+        val h = panel.menuHeightPx()
+        val left = ((root.width - w) / 2).coerceAtLeast(0)
+        val top = dp(4)
+
+        panel.pivotX = (w / 2).toFloat()
+        panel.pivotY = 0f
         root.addView(
-            menu,
+            panel,
             FrameLayout.LayoutParams(w, h).apply {
                 gravity = Gravity.TOP or Gravity.START
                 leftMargin = left
@@ -298,11 +231,11 @@ class ClipboardPane @JvmOverloads constructor(
             }
         )
 
-        menu.alpha = 0f
-        menu.scaleX = 0.92f
-        menu.scaleY = 0.92f
-        menu.translationY = dp(6).toFloat()
-        menu.animate()
+        panel.alpha = 0f
+        panel.scaleX = 0.92f
+        panel.scaleY = 0.92f
+        panel.translationY = dp(6).toFloat()
+        panel.animate()
             .alpha(1f)
             .scaleX(1f)
             .scaleY(1f)
@@ -311,23 +244,24 @@ class ClipboardPane @JvmOverloads constructor(
             .setInterpolator(OvershootInterpolator(1.05f))
             .start()
 
-        menu.post {
-            val loc = IntArray(2)
-            menu.getLocationInWindow(loc)
-            gestureMenuTopY = loc[1]
-        }
-        gestureMenu = menu
+        actionPanel = panel
+        panelOpen = true
     }
 
-    private fun dismissMenu(after: (() -> Unit)? = null) {
-        val m = gestureMenu
-        if (m == null) {
-            after?.invoke()
+    private fun closeActionPanel() {
+        val panel = actionPanel
+        if (panel == null) {
+            panelOpen = false
             return
         }
-        gestureMenu = null
-        after?.invoke()
-        m.dismiss()
+        panelOpen = false
+        actionPanel = null
+        panel.dismiss()
+    }
+
+    override fun onDetachedFromWindow() {
+        closeActionPanel()
+        super.onDetachedFromWindow()
     }
 
     private fun dp(v: Int): Int = TypedValue.applyDimension(

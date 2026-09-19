@@ -1,18 +1,34 @@
 # MeroType Changelog
 
-## [1.1.17] - 2026-09-19
+## [1.1.18] - 2026-09-19
 
 ### Added
-- Floating glass gesture menu for editing actions: long-press a clipboard clip and
-  a translucent rounded panel unfolds right beside it. Slide your finger up/down to
-  steer a soft accent pill across Paste / Copy / Select all / Cut (Select all starts
-  focused), then lift to run the action — no lifting or re-tapping needed. The panel
-  flips above/below to stay on screen, fades and scales in, and copies/cuts still
-  land in your clipboard first, exactly as before.
+- Floating glass action panel: the clipboard pane's "Actions" button opens a
+  translucent rounded panel above the keyboard with Select all / Copy / Paste /
+  Cut as static, directly-tappable buttons (side by side). It is theme-aware,
+  fades/scales in, and Copy/Cut auto-grey when nothing is highlighted, Paste when
+  the clipboard is empty
+- Double-click a suggestion to cycle its case — UPPER → lower → normal — and the
+  keyboard remembers the choice: the word is offered and committed in that case
+  until you cycle it again
+
+### Fixed
+- Cut now always lands in your clipboard history: the selected text is captured
+  the moment you cut, and the system clip is re-read with retries since many apps
+  publish it asynchronously. (Copy gets the same retry for slow editors.)
+- Copy/Cut are disabled when nothing is selected, so tapping them can no longer
+  trigger a stray clipboard notification or swap in an old clip
+- Auto-capitalize no longer fights you: the first letter is only capitalized once
+  at sentence start, and if you tap shift to override it (or want lowercase),
+  your choice sticks instead of snapping back to uppercase. The keyboard now also
+  shows the active shift state visually
+- Deleted learned words stay deleted: the keyboard and Settings used to each keep
+  their own in-memory copy and could resurrect a word you removed — both now
+  resync from storage before writing, so a deletion sticks permanently
 
 ### Changed
-- Clipboard menu is context-aware: Copy and Cut are greyed out when nothing is
-  highlighted in the editor, Paste is greyed out when the clipboard is empty
+- Typing sound restored to the pre-1.1.16 click (single fixed pitch and volume
+  per key, no pitch randomization)
 
 ## [1.1.16] - 2026-09-19
 

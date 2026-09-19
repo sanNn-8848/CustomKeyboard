@@ -176,10 +176,8 @@ class GboardKeyboardView @JvmOverloads constructor(
             SOUND_DELETE -> soundDelete
             else -> soundLetter
         }
-        // Slightly randomize the playback rate so fast typing sounds like an
-        // organic "tik tik tik" instead of a machine-gun of identical clicks.
-        val rate = 0.94f + (System.nanoTime().toInt() % 120) / 1000f
-        soundPool?.play(stream, 0.9f, 0.9f, 1, 0, rate)
+        // Original click: single fixed pitch/volume, matching v1.1.16 and earlier.
+        soundPool?.play(stream, 0.8f, 0.8f, 1, 0, 1f)
     }
 
     // Haptics: crisp impulse for letters, longer/stronger for structural keys.
@@ -849,7 +847,18 @@ class GboardKeyboardView @JvmOverloads constructor(
     private fun toggleShift() {
         isShifted = !isShifted
         refreshKeyLabels()
+        onShiftToggled?.invoke(isShifted)
     }
+
+    /** External auto-capitalization (sentence start). Keeps the visual state in sync. */
+    fun setShifted(shifted: Boolean) {
+        isShifted = shifted
+        refreshKeyLabels()
+        styleShiftIcon()
+    }
+
+    /** Fired only when the USER taps the shift key (never for auto-capitalization). */
+    var onShiftToggled: ((Boolean) -> Unit)? = null
 
     private fun toggleSymbols() {
         isSymbols = !isSymbols

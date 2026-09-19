@@ -40,8 +40,10 @@ class SuggestionEngine(private val context: android.content.Context) {
     private val store = DictionaryStore(context)
 
     private val learnedWords = HashMap<String, Int>()
+    private var loadedLearnedRevision = store.learnedRevision()
     private val suppressedWords = store.loadSuppressed().toMutableSet()
     private val favoriteWords = store.loadFavorites().toMutableSet()
+    private val caseOverrides = store.loadCaseOverrides().toMutableMap()
 
     // Base ranks from the shipped vocabulary, so removing a learned/personal
     // entry can restore the exact original frequency instead of killing it.
@@ -405,6 +407,7 @@ class SuggestionEngine(private val context: android.content.Context) {
     fun learnWord(word: String) {
         val clean = word.lowercase()
         if (clean.isBlank()) return
+        syncLearnedFromStorage()
         val count = (learnedWords[clean] ?: 0) + 1
         learnedWords[clean] = count
         // Never let a learned count clobber a saved/dictionary rank.
@@ -413,7 +416,7 @@ class SuggestionEngine(private val context: android.content.Context) {
         }
         knownWordsCache = null
         if (learnedWords.size > MAX_LEARNED_WORDS) trimLearnedWords()
-        store.saveLearned(learnedWords)
+        persistLearned()
     }
 
     fun updateContext(word: String) {
@@ -505,26 +508,55 @@ class SuggestionEngine(private val context: android.content.Context) {
         scoreCache.clear()
     }
 
-    fun getLearnedWords(): List<Pair<String, Int>> =
-        learnedWords.entries.map { it.key to it.value }
+    /** Returns [word] with its remembered case applied: UPPER, lower, or as-is. */
+    fun applyCase(word: String): String {
+        val mode = caseOverrides[word.lowercase()] ?: return word
+        return when (mode) {
+            "upper" -> word.uppercase()
+            "lower" -> word.lowercase()
+            else -> word
+        }
+    }
+
+    /** Cycles the remembered case for [word] (upper → lower → normal) and returns
+     *  the freshly cased word. */
+    fun cycleCase(word: String): String {
+        val key = word.lowercase()
+        val next = when (caseOverrides[key]) {
+            "upper" -> "lower"
+            "lower" -> null
+            else -> "upper"
+        }
+        if (next == null) caseOverrides.remove(key) else caseOverrides[key] = next
+        store.saveCaseOverrides(caseOverrides)
+        return applyCase(word)
+    }
+
+    fun getLearnedWords(): List<Pair<String, Int>> {
+        syncLearnedFromStorage()
+        return learnedWords.entries.map { it.key to it.value }
             .sortedByDescending { it.second }
+    }
 
     fun removeLearnedWord(word: String) {
+        syncLearnedFromStorage()
         if (learnedWords.remove(word.lowercase()) != null) {
             restoreTrieEntry(word)
             knownWordsCache = null
-            store.saveLearned(learnedWords)
+            persistLearned()
         }
     }
 
     fun clearLearnedWords() {
+        syncLearnedFromStorage()
         learnedWords.keys.forEach { restoreTrieEntry(it) }
         learnedWords.clear()
         knownWordsCache = null
-        store.saveLearned(learnedWords)
+        persistLearned()
     }
 
     fun restoreLearned(words: Map<String, Int>) {
+        syncLearnedFromStorage()
         words.forEach { (word, count) ->
             learnedWords[word] = count
             // Restore the word's rightful rank (novel words come back at full count).
@@ -533,7 +565,29 @@ class SuggestionEngine(private val context: android.content.Context) {
             }
         }
         knownWordsCache = null
+        persistLearned()
+    }
+
+    /** Re-reads the learned bucket when another [SuggestionEngine] instance (the
+     *  keyboard vs. the Settings screen) changed it, reconciling the trie so a
+     *  word deleted elsewhere can never be resurrected by this instance's save. */
+    private fun syncLearnedFromStorage() {
+        val rev = store.learnedRevision()
+        if (rev == loadedLearnedRevision) return
+        val fresh = store.loadLearned()
+        (learnedWords.keys - fresh.keys).forEach { restoreTrieEntry(it) }
+        (fresh.keys - learnedWords.keys).forEach { word ->
+            trie.insert(word, fresh.getValue(word))
+        }
+        learnedWords.clear()
+        learnedWords.putAll(fresh)
+        knownWordsCache = null
+        loadedLearnedRevision = rev
+    }
+
+    private fun persistLearned() {
         store.saveLearned(learnedWords)
+        loadedLearnedRevision = store.learnedRevision()
     }
 
     /** Puts a word back to its pre-learning trie state: personal words keep their

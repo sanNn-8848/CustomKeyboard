@@ -38,6 +38,7 @@ class SuggestionBar @JvmOverloads constructor(
     private var chipsScroll: HorizontalScrollView? = null
 
     var onSuggestionClickListener: ((String) -> Unit)? = null
+    var onSuggestionDoubleClickListener: ((String) -> Unit)? = null
     var onUndoClickListener: (() -> Unit)? = null
 
     /** Dragged chip + the word and the raw screen coords where the touch started. */
@@ -56,6 +57,8 @@ class SuggestionBar @JvmOverloads constructor(
     private var downRawY = 0f
     private var dragActive = false
     private var lastSuggestions: List<String> = emptyList()
+    private var lastTapWord: String? = null
+    private var lastTapTime = 0L
 
     private val longPressRunnable = Runnable {
         val chip = pendingChip ?: return@Runnable
@@ -138,7 +141,19 @@ class SuggestionBar @JvmOverloads constructor(
                     pendingChip = null
                     onSuggestionDragEnd?.invoke(event.rawX, event.rawY)
                 } else if (!movedBeyondSlop(event.rawX, event.rawY)) {
-                    onSuggestionClickListener?.invoke(word)
+                    val now = android.os.SystemClock.uptimeMillis()
+                    val doubleTap =
+                        lastTapWord == word &&
+                            now - lastTapTime <= ViewConfiguration.getDoubleTapTimeout()
+                    if (doubleTap) {
+                        lastTapWord = null
+                        lastTapTime = 0L
+                        onSuggestionDoubleClickListener?.invoke(word)
+                    } else {
+                        lastTapWord = word
+                        lastTapTime = now
+                        onSuggestionClickListener?.invoke(word)
+                    }
                 }
                 pendingWord = ""
             }

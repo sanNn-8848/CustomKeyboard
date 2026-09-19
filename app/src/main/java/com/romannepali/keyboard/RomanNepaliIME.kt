@@ -65,24 +65,38 @@ class RomanNepaliIME : InputMethodService() {
     }
 
     /**
-     * After the user explicitly uses the toolbar's Copy/Cut, read the resulting
-     * system clip into history. Manual only: nothing outside the keyboard triggers this.
+     * After the user explicitly uses the toolbar's Copy/Cut, capture the text
+     * that lands on the system clipboard into history. The host app usually
+     * publishes the primary clip asynchronously, so the read is retried a few
+     * times; [knownText] (the selection read before a Cut) is stored immediately
+     * as a fallback that never depends on host timing.
      */
-    private fun saveEditedClip() {
-        try {
+    private fun saveEditedClip(knownText: String? = null, attempt: Int = 0) {
+        if (!knownText.isNullOrBlank() && attempt == 0) {
+            clipboardManager.copy(knownText)
+        }
+        val systemText = readPrimaryClipText()
+        if (!systemText.isNullOrBlank()) {
+            clipboardManager.copy(systemText)
+        } else if (attempt < 5) {
+            mainHandler.postDelayed({ saveEditedClip(null, attempt + 1) }, 100L)
+        }
+    }
+
+    /** Reads the current system clip, or null if not ready / unavailable. */
+    private fun readPrimaryClipText(): String? {
+        return try {
             val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE)
-                as? android.content.ClipboardManager
-                ?: return
-            val clip = cm.primaryClip ?: return
-            if (clip.itemCount == 0) return
-            val text = clip.getItemAt(0).coerceToText(this).toString()
-            if (text.isNotBlank()) {
-                clipboardManager.copy(text)
-            }
+                as? android.content.ClipboardManager ?: return null
+            val clip = cm.primaryClip ?: return null
+            if (clip.itemCount == 0) return null
+            clip.getItemAt(0).coerceToText(this).toString().takeIf { it.isNotBlank() }
         } catch (_: SecurityException) {
             // Shortcut or restricted IME — nothing we can do.
+            null
         } catch (_: IllegalStateException) {
             // Primary clip not yet ready.
+            null
         }
     }
 
@@ -151,6 +165,9 @@ class RomanNepaliIME : InputMethodService() {
 
         suggestionBar?.onSuggestionClickListener = { suggestion ->
             applySuggestion(suggestion)
+        }
+        suggestionBar?.onSuggestionDoubleClickListener = { suggestion ->
+            applySuggestion(suggestion, cycleCase = true)
         }
 
         // "Suggestion Edit Mode": long-press a chip and drop it on a magnetic zone.
@@ -266,20 +283,16 @@ class RomanNepaliIME : InputMethodService() {
                     }
 
                     else -> {
-                        val shifted = text.length == 1 && text[0].isUpperCase()
-                        val sentenceStart =
-                            text.length == 1 && text[0].isLowerCase() && isSentenceStart()
-                        val sent = if (shifted || sentenceStart) text.uppercase() else text
-
-                        ic.commitText(sent, 1)
-                        if (sent.length == 1 && sent[0].isLetter()) {
-                            currentWord.append(sent.lowercase())
+                        ic.commitText(text, 1)
+                        if (text.length == 1 && text[0].isLetter()) {
+                            currentWord.append(text.lowercase())
                             updateSuggestions()
                         }
                     }
                 }
 
                 updateUndoUi()
+                updateAutoShift()
             }
         }
 
@@ -371,6 +384,25 @@ class RomanNepaliIME : InputMethodService() {
         return last == '.' || last == '!' || last == '?' || last == '\n'
     }
 
+    // Auto-capitalization: applied ONCE per sentence start, and only so long as
+    // the user doesn't override it with a manual shift tap. Manual shift is
+    // always respected — the auto state never fights back.
+    private var autoShiftApplied = false
+    private var userShiftOverride = false
+
+    private fun updateAutoShift() {
+        val kb = keyboardView ?: return
+        if (isSentenceStart()) {
+            if (!autoShiftApplied && !userShiftOverride) {
+                kb.setShifted(true)
+                autoShiftApplied = true
+            }
+        } else {
+            autoShiftApplied = false
+            userShiftOverride = false
+        }
+    }
+
     private fun currentPredictionContext(): PredictionContext = PredictionContext(
         currentWord = currentWord.toString(),
         previousWords = contextWords.toList(),
@@ -391,8 +423,13 @@ class RomanNepaliIME : InputMethodService() {
                 when (action) {
                     ClipAction.SELECT_ALL -> textEditor.selectAll(ic)
                     ClipAction.CUT -> {
+                        // Read the selection before cutting: many editors publish
+                        // the primary clip asynchronously, but our fallback works
+                        // even if a slow app never surfaces it in time.
+                        val selected = ic.getSelectedText(0)
+                            ?.toString()?.takeIf { it.isNotBlank() }
                         textEditor.cut(ic)
-                        saveEditedClip()
+                        saveEditedClip(selected)
                     }
                     ClipAction.COPY -> {
                         textEditor.copy(ic)
@@ -401,8 +438,10 @@ class RomanNepaliIME : InputMethodService() {
                     ClipAction.PASTE -> textEditor.paste(ic)
                 }
                 // Let the app perform the action (and set the system clip)
-                // before we re-read it into history.
-                mainHandler.postDelayed({ refreshClipboardPane() }, 150)
+                // before we re-read it into history. Refreshed twice so the
+                // freshly copied cut text is visible even on slow editors.
+                mainHandler.postDelayed({ refreshClipboardPane() }, 200)
+                mainHandler.postDelayed({ refreshClipboardPane() }, 500)
             },
             onPaste = { text ->
                 if (currentWord.isNotEmpty()) finishCurrentWord()
@@ -442,26 +481,33 @@ class RomanNepaliIME : InputMethodService() {
             mainHandler.post {
                 // Only apply if no newer keystroke superseded this one.
                 if (job == suggestionJob) {
-                    suggestionBar?.showSuggestions(suggestions)
+                    suggestionBar?.showSuggestions(
+                        suggestions.map { suggestionEngine.applyCase(it) }
+                    )
                 }
             }
         }
     }
 
-    private fun applySuggestion(suggestion: String) {
+    private fun applySuggestion(suggestion: String, cycleCase: Boolean = false) {
         val ic = currentInputConnection ?: return
+
+        var out = suggestionEngine.applyCase(suggestion)
+        if (cycleCase) {
+            out = suggestionEngine.cycleCase(suggestion)
+        }
 
         if (currentWord.isNotEmpty()) {
             ic.deleteSurroundingText(currentWord.length, 0)
         }
 
-        ic.commitText(suggestion, 1)
+        ic.commitText(out, 1)
 
         val words = suggestion.split(Regex("\\s+")).filter { it.isNotBlank() }
         words.forEach { word ->
-            suggestionEngine.learnWord(word)
-            suggestionEngine.updateContext(word)
-            pushContext(word)
+            suggestionEngine.learnWord(word.lowercase())
+            suggestionEngine.updateContext(word.lowercase())
+            pushContext(word.lowercase())
         }
 
         currentWord.clear()
@@ -556,6 +602,12 @@ class RomanNepaliIME : InputMethodService() {
         lastSuppressedWord = null
         suggestionBar?.clearSuggestions()
         updateUndoUi()
+        autoShiftApplied = false
+        userShiftOverride = false
+        keyboardView?.onShiftToggled = { _ ->
+            if (isSentenceStart()) userShiftOverride = true
+        }
+        updateAutoShift()
         keyboardView?.applyThemeIfChanged()
         applyKeyboardTheme()
     }
