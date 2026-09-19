@@ -1,5 +1,19 @@
 # MeroType Changelog
 
+## [1.1.17] - 2026-09-19
+
+### Added
+- Floating glass gesture menu for editing actions: long-press a clipboard clip and
+  a translucent rounded panel unfolds right beside it. Slide your finger up/down to
+  steer a soft accent pill across Paste / Copy / Select all / Cut (Select all starts
+  focused), then lift to run the action — no lifting or re-tapping needed. The panel
+  flips above/below to stay on screen, fades and scales in, and copies/cuts still
+  land in your clipboard first, exactly as before.
+
+### Changed
+- Clipboard menu is context-aware: Copy and Cut are greyed out when nothing is
+  highlighted in the editor, Paste is greyed out when the clipboard is empty
+
 ## [1.1.16] - 2026-09-19
 
 ### Added

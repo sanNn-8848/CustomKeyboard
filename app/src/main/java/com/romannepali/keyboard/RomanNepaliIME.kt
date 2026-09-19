@@ -380,9 +380,12 @@ class RomanNepaliIME : InputMethodService() {
 
     private fun refreshClipboardPane() {
         val dark = Prefs.darkTheme(this)
+        val hasSelection = currentInputConnection?.getSelectedText(0)
+            ?.toString()?.isNotEmpty() == true
         clipboardPane?.bind(
             clipboardManager,
             dark,
+            hasSelection,
             onAction = { action ->
                 val ic = currentInputConnection ?: return@bind
                 when (action) {
