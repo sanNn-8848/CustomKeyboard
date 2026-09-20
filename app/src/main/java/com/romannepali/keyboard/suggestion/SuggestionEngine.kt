@@ -1,8 +1,17 @@
 package com.romannepali.keyboard.suggestion
 
+import java.util.concurrent.ConcurrentHashMap
 import org.json.JSONObject
 import kotlin.math.abs
 import kotlin.math.ln
+
+/**
+ * Minimum confidence for an autocorrection to be applied. Calibrated to the
+ * spread-based confidence in [SuggestionEngine.withConfidence]: a clearly
+ * dominant typo candidate ("namsate" -> "namaste") scores roughly 0.65, while
+ * weak/ambiguous candidates stay at or below 0.50.
+ */
+const val AUTO_CORRECT_THRESHOLD = 0.60f
 
 /** Where a candidate came from. Lets the IME decide how to trust it. */
 enum class CandidateSource {
@@ -39,6 +48,11 @@ class SuggestionEngine(private val context: android.content.Context) {
     private val charModel = CharModel(context)
     private val store = DictionaryStore(context)
 
+    // Serializes all access to mutable prediction state (trie, learned words,
+    // suppressed/favorite sets, caches) so background predict() never races
+    // with UI-thread mutations from the keyboard.
+    private val stateLock = Any()
+
     private val learnedWords = HashMap<String, Int>()
     private var loadedLearnedRevision = store.learnedRevision()
     private val suppressedWords = store.loadSuppressed().toMutableSet()
@@ -49,16 +63,13 @@ class SuggestionEngine(private val context: android.content.Context) {
     // entry can restore the exact original frequency instead of killing it.
     private val baseFrequencies = HashMap<String, Int>()
 
-    private val scoreCache = HashMap<String, Double>()
+    private val scoreCache = ConcurrentHashMap<String, Double>()
+    @Volatile
     private var knownWordsCache: List<String>? = null
 
     // Variant-group data from roman_words.json (canonical spelling per group).
     private var variantGroups: Map<String, List<String>> = emptyMap()
     private var wordToGroupKey: Map<String, String> = emptyMap()
-
-    // Context for next-word prediction (previous finished words).
-    private val contextWords = mutableListOf<String>()
-    private val maxContextSize = 3
 
     init {
         loadDictionary()
@@ -85,7 +96,15 @@ class SuggestionEngine(private val context: android.content.Context) {
         CandidateSource.EMOJI to 0.35
     )
 
-    fun predict(context: PredictionContext, limit: Int = 3): List<PredictionResult> {
+    fun predict(context: PredictionContext, limit: Int = 3): List<PredictionResult> =
+        synchronized(stateLock) {
+            predictInternal(context, limit)
+        }
+
+    private fun predictInternal(
+        context: PredictionContext,
+        limit: Int = 3
+    ): List<PredictionResult> {
         val input = context.currentWord.trim().lowercase()
         val prev = context.previousWords.map { it.trim().lowercase() }.filter { it.isNotEmpty() }
 
@@ -168,7 +187,8 @@ class SuggestionEngine(private val context: android.content.Context) {
 
         // 1e. Words this user typed before are heavily personalised: any learned
         // word matching the prefix outranks generic dictionary matches.
-        for ((word, count) in learnedWords) {
+        val learnedSnapshot = learnedWords.toMap()
+        for ((word, count) in learnedSnapshot) {
             if (word.startsWith(input)) {
                 bump(word, CandidateSource.LEARNED, minOf(1.0, 0.6 + ln(1.0 + count) / 2.5))
             }
@@ -204,10 +224,11 @@ class SuggestionEngine(private val context: android.content.Context) {
             .sortedByDescending { it.score }
 
         // 2b. Favorites ride the magnetic rail: boost so they clear equal peers.
-        if (favoriteWords.isNotEmpty()) {
+        val favoriteSnapshot = favoriteWords.toSet()
+        if (favoriteSnapshot.isNotEmpty()) {
             results = results
                 .map {
-                    if (it.word.lowercase() in favoriteWords)
+                    if (it.word.lowercase() in favoriteSnapshot)
                         it.copy(score = it.score + FAVORITE_BOOST)
                     else it
                 }
@@ -248,7 +269,8 @@ class SuggestionEngine(private val context: android.content.Context) {
         }
 
         // 4. Confidence from the top-2 spread; decays down the list.
-        val filtered = results.filter { it.word !in suppressedWords }
+        val suppressedSnapshot = suppressedWords.toSet()
+        val filtered = results.filter { it.word !in suppressedSnapshot }
         val ranked = filtered.take(limit)
         if (ranked.isEmpty()) return emptyList()
         return withConfidence(ranked)
@@ -289,7 +311,17 @@ class SuggestionEngine(private val context: android.content.Context) {
     private fun canonicalWord(word: String): String {
         val key = wordToGroupKey[word] ?: return word
         val members = variantGroups[key] ?: return word
-        return if (members.size > 1) members[0] else word
+
+        if (members.size <= 1) return word
+
+        // Prefer the highest-frequency dictionary spelling.
+        // If frequencies tie, use lexical order so the result is deterministic.
+        return members
+            .maxWithOrNull(
+                compareBy<String> { trie.getFrequency(it) }
+                    .thenByDescending { it }
+            )
+            ?: word
     }
 
     /** Returns words whose normalized key exactly matches the input's key. */
@@ -384,20 +416,59 @@ class SuggestionEngine(private val context: android.content.Context) {
         previousWords: List<String> = emptyList()
     ): Correction {
         val input = word.trim().lowercase()
-        if (input.isEmpty()) return Correction(input, 0f, false)
-        if (trie.contains(input)) return Correction(input, 1f, false)
 
-        val best = predict(PredictionContext(input, previousWords), limit = 5).firstOrNull { result ->
-            result.isCorrection &&
-                levenshtein(input, result.word) <= 2 &&
-                abs(result.word.length - input.length) <= 2
+        if (input.isEmpty()) {
+            return Correction(input, 0f, false)
         }
 
-        return if (best != null) {
-            Correction(best.word, best.confidence, true)
-        } else {
-            Correction(input, 0f, false)
+        // Never autocorrect a word already known to the keyboard.
+        if (trie.contains(input)) {
+            return Correction(input, 1f, false)
         }
+
+        // Very short words are ambiguous and should never be aggressively
+        // autocorrected.
+        if (input.length < 4) {
+            return Correction(input, 0f, false)
+        }
+
+        val candidates = predict(
+            PredictionContext(
+                currentWord = input,
+                previousWords = previousWords
+            ),
+            limit = 7
+        )
+            .filter { result ->
+                result.isCorrection &&
+                    levenshtein(input, result.word) in 1..2 &&
+                    abs(result.word.length - input.length) <= 2 &&
+                    result.confidence >= AUTO_CORRECT_THRESHOLD
+            }
+            .sortedWith(
+                compareByDescending<PredictionResult> { it.confidence }
+                    .thenByDescending { it.score }
+            )
+
+        val best = candidates.firstOrNull()
+            ?: return Correction(input, 0f, false)
+
+        // Require a reasonably strong similarity. This prevents an unrelated
+        // dictionary word from becoming an autocorrection merely because it
+        // happens to have a decent prediction score.
+        val distance = levenshtein(input, best.word)
+        val similarity =
+            1.0 - distance.toDouble() / maxOf(input.length, best.word.length)
+
+        if (similarity < 0.70) {
+            return Correction(input, 0f, false)
+        }
+
+        return Correction(
+            word = best.word,
+            confidence = best.confidence,
+            isCorrection = true
+        )
     }
 
     /** Backwards-compatible word-only suggestions (the IME uses [predict]). */
@@ -405,96 +476,117 @@ class SuggestionEngine(private val context: android.content.Context) {
         predict(PredictionContext(currentWord = prefix), limit = limit).map { it.word }
 
     fun learnWord(word: String) {
-        val clean = word.lowercase()
-        if (clean.isBlank()) return
-        syncLearnedFromStorage()
-        val count = (learnedWords[clean] ?: 0) + 1
-        learnedWords[clean] = count
-        // Never let a learned count clobber a saved/dictionary rank.
-        if (count > trie.getFrequency(clean)) {
-            trie.insert(clean, count)
+        synchronized(stateLock) {
+            val clean = word.lowercase()
+            if (clean.isBlank()) return
+            syncLearnedFromStorage()
+            val count = (learnedWords[clean] ?: 0) + 1
+            learnedWords[clean] = count
+            // Never let a learned count clobber a saved/dictionary rank.
+            if (count > trie.getFrequency(clean)) {
+                trie.insert(clean, count)
+            }
+            knownWordsCache = null
+            if (learnedWords.size > MAX_LEARNED_WORDS) trimLearnedWords()
+            persistLearned()
         }
-        knownWordsCache = null
-        if (learnedWords.size > MAX_LEARNED_WORDS) trimLearnedWords()
-        persistLearned()
     }
 
-    fun updateContext(word: String) {
-        val clean = word.lowercase()
-        if (clean.isBlank()) return
+    fun updateContext(
+        previousWord: String?,
+        word: String
+    ) {
+        synchronized(stateLock) {
+            val clean = word.lowercase()
+            if (clean.isBlank()) return
 
-        contextWords.lastOrNull()?.let { previous ->
-            ngramModel.addBigram(previous, clean, 4)
-        }
+            val previous = previousWord
+                ?.trim()
+                ?.lowercase()
+                ?.takeIf { it.isNotEmpty() }
 
-        contextWords.add(clean)
-        if (contextWords.size > maxContextSize) {
-            contextWords.removeAt(0)
+            if (previous != null) {
+                ngramModel.addBigram(previous, clean, 4)
+            }
         }
     }
 
     fun addPersonalWord(word: String): Boolean {
-        val clean = word.trim().lowercase()
-        if (clean.isEmpty()) return false
-        for (ch in clean) {
-            if (!ch.isLetter() && ch != ' ' && ch != '\'') return false
-        }
+        synchronized(stateLock) {
+            val clean = word.trim().lowercase()
+            if (clean.isEmpty()) return false
+            for (ch in clean) {
+                if (!ch.isLetter() && ch != ' ' && ch != '\'') return false
+            }
 
-        val saved = store.loadSaved().toMutableList()
-        if (clean !in saved) {
-            saved.add(clean)
-            store.saveSaved(saved)
-            trie.insert(clean, SAVED_WORD_FREQUENCY)
-            knownWordsCache = null
+            val saved = store.loadSaved().toMutableList()
+            if (clean !in saved) {
+                saved.add(clean)
+                store.saveSaved(saved)
+                trie.insert(clean, SAVED_WORD_FREQUENCY)
+                knownWordsCache = null
+            }
+            return true
         }
-        return true
     }
 
     fun removePersonalWord(word: String) {
-        val clean = word.trim().lowercase()
-        val saved = store.loadSaved().toMutableList()
-        if (saved.remove(clean)) {
-            store.saveSaved(saved)
+        synchronized(stateLock) {
+            val clean = word.trim().lowercase()
+            val saved = store.loadSaved().toMutableList()
+            if (saved.remove(clean)) {
+                store.saveSaved(saved)
+            }
+            restoreTrieEntry(clean)
+            knownWordsCache = null
         }
-        restoreTrieEntry(clean)
-        knownWordsCache = null
     }
 
     fun getSavedWords(): List<String> = store.loadSaved()
 
     /** Hides a word from future suggestions without erasing its learned history. */
     fun suppress(word: String) {
-        if (suppressedWords.add(word.lowercase())) {
-            store.saveSuppressed(suppressedWords)
+        synchronized(stateLock) {
+            if (suppressedWords.add(word.lowercase())) {
+                store.saveSuppressed(suppressedWords)
+            }
         }
     }
 
     /** Re-enables a previously suppressed word (used by undo and settings). */
     fun unsuppress(word: String) {
-        if (suppressedWords.remove(word.lowercase())) {
-            store.saveSuppressed(suppressedWords)
+        synchronized(stateLock) {
+            if (suppressedWords.remove(word.lowercase())) {
+                store.saveSuppressed(suppressedWords)
+            }
         }
     }
 
     fun getSuppressedWords(): List<String> = suppressedWords.toList().sorted()
 
     fun clearSuppressedWords() {
-        suppressedWords.clear()
-        store.saveSuppressed(suppressedWords)
+        synchronized(stateLock) {
+            suppressedWords.clear()
+            store.saveSuppressed(suppressedWords)
+        }
     }
 
     /** Boosts a word so it surfaces near the top of suggestions. */
     fun favorite(word: String) {
-        if (favoriteWords.add(word.lowercase())) {
-            store.saveFavorites(favoriteWords)
-            scoreCache.clear()
+        synchronized(stateLock) {
+            if (favoriteWords.add(word.lowercase())) {
+                store.saveFavorites(favoriteWords)
+                scoreCache.clear()
+            }
         }
     }
 
     fun unfavorite(word: String) {
-        if (favoriteWords.remove(word.lowercase())) {
-            store.saveFavorites(favoriteWords)
-            scoreCache.clear()
+        synchronized(stateLock) {
+            if (favoriteWords.remove(word.lowercase())) {
+                store.saveFavorites(favoriteWords)
+                scoreCache.clear()
+            }
         }
     }
 
@@ -503,9 +595,11 @@ class SuggestionEngine(private val context: android.content.Context) {
     fun getFavorites(): List<String> = favoriteWords.toList().sorted()
 
     fun clearFavorites() {
-        favoriteWords.clear()
-        store.saveFavorites(favoriteWords)
-        scoreCache.clear()
+        synchronized(stateLock) {
+            favoriteWords.clear()
+            store.saveFavorites(favoriteWords)
+            scoreCache.clear()
+        }
     }
 
     /** Returns [word] with its remembered case applied: UPPER, lower, or as-is. */
@@ -533,39 +627,47 @@ class SuggestionEngine(private val context: android.content.Context) {
     }
 
     fun getLearnedWords(): List<Pair<String, Int>> {
-        syncLearnedFromStorage()
-        return learnedWords.entries.map { it.key to it.value }
-            .sortedByDescending { it.second }
+        synchronized(stateLock) {
+            syncLearnedFromStorage()
+            return learnedWords.entries.map { it.key to it.value }
+                .sortedByDescending { it.second }
+        }
     }
 
     fun removeLearnedWord(word: String) {
-        syncLearnedFromStorage()
-        if (learnedWords.remove(word.lowercase()) != null) {
-            restoreTrieEntry(word)
+        synchronized(stateLock) {
+            syncLearnedFromStorage()
+            if (learnedWords.remove(word.lowercase()) != null) {
+                restoreTrieEntry(word)
+                knownWordsCache = null
+                persistLearned()
+            }
+        }
+    }
+
+    fun clearLearnedWords() {
+        synchronized(stateLock) {
+            syncLearnedFromStorage()
+            learnedWords.keys.forEach { restoreTrieEntry(it) }
+            learnedWords.clear()
             knownWordsCache = null
             persistLearned()
         }
     }
 
-    fun clearLearnedWords() {
-        syncLearnedFromStorage()
-        learnedWords.keys.forEach { restoreTrieEntry(it) }
-        learnedWords.clear()
-        knownWordsCache = null
-        persistLearned()
-    }
-
     fun restoreLearned(words: Map<String, Int>) {
-        syncLearnedFromStorage()
-        words.forEach { (word, count) ->
-            learnedWords[word] = count
-            // Restore the word's rightful rank (novel words come back at full count).
-            if (count > trie.getFrequency(word.lowercase())) {
-                trie.insert(word.lowercase(), count)
+        synchronized(stateLock) {
+            syncLearnedFromStorage()
+            words.forEach { (word, count) ->
+                learnedWords[word] = count
+                // Restore the word's rightful rank (novel words come back at full count).
+                if (count > trie.getFrequency(word.lowercase())) {
+                    trie.insert(word.lowercase(), count)
+                }
             }
+            knownWordsCache = null
+            persistLearned()
         }
-        knownWordsCache = null
-        persistLearned()
     }
 
     /** Re-reads the learned bucket when another [SuggestionEngine] instance (the
@@ -586,7 +688,9 @@ class SuggestionEngine(private val context: android.content.Context) {
     }
 
     private fun persistLearned() {
-        store.saveLearned(learnedWords)
+        // Snapshot while stateLock is held so the storage write always sees a
+        // stable map, never a map being mutated by a concurrent edit.
+        store.saveLearned(HashMap(learnedWords))
         loadedLearnedRevision = store.learnedRevision()
     }
 
@@ -736,8 +840,6 @@ class SuggestionEngine(private val context: android.content.Context) {
         val unigramFrequencies = HashMap<String, Int>()
         trie.getAllWords().forEach { (word, freq) -> unigramFrequencies[word] = freq }
         ngramModel.loadModel(unigramFrequencies)
-        // Personalised context bigrams (user typing habits).
-        ngramModel.mergeUserContext(contextWords)
     }
 
     private fun loadEmbeddedFallback(): Triple<List<Pair<String, Int>>, Map<String, List<String>>, Map<String, String>> {

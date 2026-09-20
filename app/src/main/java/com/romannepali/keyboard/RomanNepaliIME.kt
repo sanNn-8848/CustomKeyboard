@@ -16,6 +16,7 @@ import com.romannepali.keyboard.clipboard.ClipboardManager
 import com.romannepali.keyboard.clipboard.ClipboardPane
 import com.romannepali.keyboard.editing.TextEditor
 import com.romannepali.keyboard.emoji.EmojiPane
+import com.romannepali.keyboard.suggestion.AUTO_CORRECT_THRESHOLD
 import com.romannepali.keyboard.suggestion.PredictionContext
 import com.romannepali.keyboard.suggestion.SuggestionEngine
 import java.util.concurrent.ExecutorService
@@ -263,14 +264,26 @@ class RomanNepaliIME : InputMethodService() {
                             deletedText = if (deleted == restored) restored + deleted else deleted
 
                             if (currentWord.isNotEmpty()) {
-                                currentWord.deleteCharAt(currentWord.length - 1)
-                                updateSuggestions()
-                            } else {
-                                // Backspace past a committed word: undo the context push
-                                // so re-typing the same word gets fresh predictions.
-                                if (deleted == " " && contextWords.isNotEmpty()) {
-                                    contextWords.removeAt(contextWords.lastIndex)
+                                val actual = ic.getTextBeforeCursor(1, 0)?.toString().orEmpty()
+
+                                if (actual.length == 1 &&
+                                    (actual[0].isLetter() || actual[0] == '\'')
+                                ) {
+                                    currentWord.deleteCharAt(currentWord.length - 1)
+                                    updateSuggestions()
+                                } else {
+                                    // The editor and our cached word disagree.
+                                    // Re-sync instead of corrupting currentWord.
+                                    currentWord.clear()
+                                    suggestionJob++
+                                    suggestionBar?.clearSuggestions()
                                 }
+                            } else {
+                                // Do not modify contextWords merely because the character before
+                                // the cursor is a space. The cursor may have moved, or the user
+                                // may be editing text that was not produced by this IME session.
+                                // contextWords is prediction state, not a reliable representation
+                                // of the editor's actual document.
                                 updateSuggestions()
                             }
 
@@ -340,6 +353,31 @@ class RomanNepaliIME : InputMethodService() {
     }
 
     /**
+     * Deletes exactly [expectedText] immediately before the cursor.
+     *
+     * Returns true only when the editor confirms that the text immediately
+     * before the cursor matches what we intend to remove.
+     *
+     * This prevents a stale currentWord from deleting unrelated text.
+     */
+    private fun deleteExpectedTextBeforeCursor(
+        ic: android.view.inputmethod.InputConnection,
+        expectedText: String
+    ): Boolean {
+        if (expectedText.isEmpty()) return true
+
+        val actual = ic.getTextBeforeCursor(expectedText.length, 0)
+            ?.toString()
+            ?: return false
+
+        if (actual != expectedText) {
+            return false
+        }
+
+        return ic.deleteSurroundingText(expectedText.length, 0)
+    }
+
+    /**
      * Closes the current word: learns it, feeds context, and (optionally)
      * autocorrects it conservatively before the terminator is inserted.
      */
@@ -353,15 +391,27 @@ class RomanNepaliIME : InputMethodService() {
         var committed = word
         if (autocorrect) {
             val correction = suggestionEngine.getAutoCorrection(word, contextWords)
-            if (correction.isCorrection && correction.confidence >= AUTO_CORRECT_THRESHOLD) {
-                ic.deleteSurroundingText(raw.length, 0)
-                ic.commitText(correction.word, 1)
-                committed = correction.word
+            if (correction.isCorrection &&
+                correction.confidence >= AUTO_CORRECT_THRESHOLD
+            ) {
+                if (deleteExpectedTextBeforeCursor(ic, raw)) {
+                    ic.commitText(correction.word, 1)
+                    committed = correction.word
+                } else {
+                    // Editor text no longer matches our tracked word.
+                    // Never perform a blind deletion.
+                    currentWord.clear()
+                    suggestionJob++
+                    return
+                }
             }
         }
 
         suggestionEngine.learnWord(committed)
-        suggestionEngine.updateContext(committed)
+
+        val previousWord = contextWords.lastOrNull()
+        suggestionEngine.updateContext(previousWord, committed)
+
         pushContext(committed)
         currentWord.clear()
     }
@@ -402,13 +452,6 @@ class RomanNepaliIME : InputMethodService() {
             userShiftOverride = false
         }
     }
-
-    private fun currentPredictionContext(): PredictionContext = PredictionContext(
-        currentWord = currentWord.toString(),
-        previousWords = contextWords.toList(),
-        sentenceStart = isSentenceStart(),
-        cursorPosition = currentWord.length
-    )
 
     private fun refreshClipboardPane() {
         val dark = Prefs.darkTheme(this)
@@ -468,23 +511,46 @@ class RomanNepaliIME : InputMethodService() {
             return
         }
 
-        val word = currentWord.toString()
-        if (word.isEmpty()) {
+        // Snapshot all mutable typing state on the UI thread.
+        val wordSnapshot = currentWord.toString()
+
+        if (wordSnapshot.isEmpty()) {
+            suggestionJob++
             mainHandler.post { suggestionBar?.clearSuggestions() }
             return
         }
 
+        val contextSnapshot = contextWords.toList()
+        val sentenceStartSnapshot = isSentenceStart()
+
+        // Invalidate every older job before starting this one.
         val job = ++suggestionJob
+
+        val context = PredictionContext(
+            currentWord = wordSnapshot,
+            previousWords = contextSnapshot,
+            sentenceStart = sentenceStartSnapshot,
+            cursorPosition = wordSnapshot.length
+        )
+
         suggestionExecutor.execute {
-            val context = currentPredictionContext()
-            val suggestions = suggestionEngine.predict(context, limit = 7).map { it.word }
+            val suggestions = try {
+                suggestionEngine
+                    .predict(context, limit = 7)
+                    .map { it.word }
+            } catch (_: Exception) {
+                emptyList()
+            }
+
             mainHandler.post {
-                // Only apply if no newer keystroke superseded this one.
-                if (job == suggestionJob) {
-                    suggestionBar?.showSuggestions(
-                        suggestions.map { suggestionEngine.applyCase(it) }
-                    )
+                if (job != suggestionJob) return@post
+
+                // Do one final state check before displaying the result.
+                if (currentWord.toString() != wordSnapshot) {
+                    return@post
                 }
+
+                suggestionBar?.showSuggestions(suggestions.map { suggestionEngine.applyCase(it) })
             }
         }
     }
@@ -498,15 +564,28 @@ class RomanNepaliIME : InputMethodService() {
         }
 
         if (currentWord.isNotEmpty()) {
-            ic.deleteSurroundingText(currentWord.length, 0)
+            val expected = currentWord.toString()
+
+            if (!deleteExpectedTextBeforeCursor(ic, expected)) {
+                // Our internal state doesn't match the editor.
+                // Do not risk deleting unrelated text.
+                currentWord.clear()
+                suggestionJob++
+                suggestionBar?.clearSuggestions()
+                updateUndoUi()
+                return
+            }
         }
 
         ic.commitText(out, 1)
 
         val words = suggestion.split(Regex("\\s+")).filter { it.isNotBlank() }
         words.forEach { word ->
+            val previousWord = contextWords.lastOrNull()
+
             suggestionEngine.learnWord(word.lowercase())
-            suggestionEngine.updateContext(word.lowercase())
+            suggestionEngine.updateContext(previousWord, word.lowercase())
+
             pushContext(word.lowercase())
         }
 
@@ -612,6 +691,67 @@ class RomanNepaliIME : InputMethodService() {
         applyKeyboardTheme()
     }
 
+    override fun onUpdateSelection(
+        oldSelStart: Int,
+        oldSelEnd: Int,
+        newSelStart: Int,
+        newSelEnd: Int,
+        candidatesStart: Int,
+        candidatesEnd: Int
+    ) {
+        super.onUpdateSelection(
+            oldSelStart,
+            oldSelEnd,
+            newSelStart,
+            newSelEnd,
+            candidatesStart,
+            candidatesEnd
+        )
+
+        val ic = currentInputConnection ?: return
+
+        // A selection means our internally tracked word can no longer be
+        // trusted. The user is editing an arbitrary range of the document.
+        if (newSelStart != newSelEnd) {
+            currentWord.clear()
+            suggestionJob++
+            mainHandler.post {
+                suggestionBar?.clearSuggestions()
+            }
+            updateUndoUi()
+            return
+        }
+
+        // Read the actual text immediately before the cursor instead of
+        // trusting the keyboard's cached currentWord.
+        val beforeCursor = ic.getTextBeforeCursor(MAX_SYNC_CHARS, 0)
+            ?.toString()
+            ?: return
+
+        val actualWord = beforeCursor
+            .takeLastWhile { it.isLetter() || it == '\'' }
+            .lowercase()
+
+        // If the editor's actual word differs from our cached word, the
+        // user/app changed the text or cursor outside our normal key path.
+        if (actualWord != currentWord.toString()) {
+            currentWord.clear()
+            currentWord.append(actualWord)
+
+            suggestionJob++
+
+            if (actualWord.isEmpty()) {
+                mainHandler.post {
+                    suggestionBar?.clearSuggestions()
+                }
+            } else {
+                updateSuggestions()
+            }
+
+            updateUndoUi()
+        }
+    }
+
     override fun onFinishInputView(finishingInput: Boolean) {
         dragOverlay?.endCurrentDragIfAny()
         super.onFinishInputView(finishingInput)
@@ -628,7 +768,7 @@ class RomanNepaliIME : InputMethodService() {
     }
 
     private companion object {
-        /** Conservative: only autocorrect when the model is fairly confident. */
-        const val AUTO_CORRECT_THRESHOLD = 0.45f
+        /** How many characters to read when re-deriving the word before the caret. */
+        const val MAX_SYNC_CHARS = 64
     }
 }

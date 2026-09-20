@@ -179,8 +179,8 @@ class SuggestionEngineTest {
 
     @Test
     fun nextWordPredictions_surfaceRealWords() {
-        engine.updateContext("ma")
-        engine.updateContext("garchu")
+        engine.updateContext(null, "ma")
+        engine.updateContext("ma", "garchu")
         val results = engine.predict(
             PredictionContext(currentWord = "", previousWords = listOf("ma")),
             limit = 5
