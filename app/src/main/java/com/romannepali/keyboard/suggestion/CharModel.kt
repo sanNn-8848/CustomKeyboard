@@ -2,6 +2,7 @@ package com.romannepali.keyboard.suggestion
 
 import android.content.Context
 import org.json.JSONObject
+import java.util.Locale
 import kotlin.math.ln
 
 /**
@@ -14,19 +15,10 @@ import kotlin.math.ln
  * The model can:
  *  - score Roman Nepali words
  *  - generate plausible words from a prefix
- *
- * Example:
- *
- *     generate("ka")
- *
- * can produce:
- *     kata
- *     kati
- *     kasto
- *     kato
- *     kaha
  */
-class CharModel(private val context: Context) {
+class CharModel(context: Context) {
+
+    private val appContext = context.applicationContext
 
     private var n = 3
 
@@ -34,31 +26,56 @@ class CharModel(private val context: Context) {
 
     private val alphabet = "abcdefghijklmnopqrstuvwxyz"
 
+    @Volatile
     private var loaded = false
 
     /**
      * Load the trained model from Android assets.
+     *
+     * Loading is synchronized so concurrent callers cannot
+     * partially initialize the model.
      */
+    @Synchronized
     fun loadModel() {
         if (loaded) return
 
         try {
-            val jsonText = context.assets
+            val jsonText = appContext.assets
                 .open("char_model.json")
                 .bufferedReader()
                 .use { it.readText() }
 
             val root = JSONObject(jsonText)
 
-            n = root.optInt("n", 3)
+            val modelN = root.optInt("n", 3)
 
-            val ngrams = root.getJSONObject("ngrams")
+            // Character n-gram models require at least a bigram.
+            n = modelN.coerceIn(2, 5)
+
+            val ngrams = root.optJSONObject("ngrams")
+                ?: JSONObject()
+
+            ngramProbabilities.clear()
 
             val keys = ngrams.keys()
 
             while (keys.hasNext()) {
-                val key = keys.next()
-                val value = ngrams.getDouble(key)
+                val rawKey = keys.next()
+
+                val key = rawKey
+                    .lowercase(Locale.ROOT)
+                    .trim()
+
+                if (key.isEmpty()) continue
+
+                val value = ngrams.optDouble(
+                    rawKey,
+                    Double.NaN
+                )
+
+                if (!value.isFinite() || value <= 0.0) {
+                    continue
+                }
 
                 ngramProbabilities[key] = value
             }
@@ -66,20 +83,18 @@ class CharModel(private val context: Context) {
             loaded = true
 
         } catch (e: Exception) {
-            e.printStackTrace()
+            ngramProbabilities.clear()
             loaded = false
+            e.printStackTrace()
         }
     }
 
     /**
      * Kept for compatibility with the old SuggestionEngine.
      *
-     * The real Android model is loaded from char_model.json,
-     * so this method is intentionally not used for training.
+     * The Android model is pre-trained in Python.
      */
     fun train(text: String) {
-        // The model is pre-trained in Python.
-        // Android loads char_model.json instead.
         loadModel()
     }
 
@@ -108,10 +123,11 @@ class CharModel(private val context: Context) {
             val gram = padded.substring(i, i + n)
 
             val probability =
-                ngramProbabilities[gram] ?: 0.000001
+                ngramProbabilities[gram]
+                    ?: UNKNOWN_PROBABILITY
 
             totalScore += ln(
-                probability.coerceAtLeast(0.000001)
+                probability.coerceAtLeast(UNKNOWN_PROBABILITY)
             )
         }
 
@@ -139,8 +155,28 @@ class CharModel(private val context: Context) {
             return emptyList()
         }
 
-        if (prefix.length >= maxLength) {
-            return listOf(prefix)
+        if (maxResults <= 0) {
+            return emptyList()
+        }
+
+        if (minLength < 1 || maxLength < 1) {
+            return emptyList()
+        }
+
+        if (minLength > maxLength) {
+            return emptyList()
+        }
+
+        if (prefix.length > maxLength) {
+            return emptyList()
+        }
+
+        if (prefix.length == maxLength) {
+            return if (prefix.length >= minLength) {
+                listOf(prefix)
+            } else {
+                emptyList()
+            }
         }
 
         val candidates = HashMap<String, Double>()
@@ -170,11 +206,11 @@ class CharModel(private val context: Context) {
                 if (word.length >= minLength) {
 
                     val finalScore =
-                        candidate.score +
-                                endingScore(word)
+                        candidate.score + endingScore(word)
 
                     candidates[word] = maxOf(
-                        candidates[word] ?: Double.NEGATIVE_INFINITY,
+                        candidates[word]
+                            ?: Double.NEGATIVE_INFINITY,
                         finalScore
                     )
                 }
@@ -193,12 +229,10 @@ class CharModel(private val context: Context) {
 
                     val nextWord = word + char
 
-                    val nextScore = score(nextWord)
-
                     nextLevel.add(
                         Candidate(
                             nextWord,
-                            nextScore
+                            score(nextWord)
                         )
                     )
                 }
@@ -206,12 +240,10 @@ class CharModel(private val context: Context) {
 
             /*
              * Beam width.
-             *
-             * Only keep the best 40 partial words.
              */
             currentLevel = nextLevel
                 .sortedByDescending { it.score }
-                .take(40)
+                .take(BEAM_WIDTH)
                 .toMutableList()
         }
 
@@ -225,6 +257,9 @@ class CharModel(private val context: Context) {
     /**
      * Find characters that are statistically likely to
      * follow the current word.
+     *
+     * The context uses the same '^' start padding as score().
+     * This is important for short prefixes such as "k".
      */
     private fun nextCharacters(current: String): List<Char> {
 
@@ -233,8 +268,13 @@ class CharModel(private val context: Context) {
             current.length
         )
 
-        val context =
-            current.takeLast(contextLength)
+        val rawContext = current.takeLast(contextLength)
+
+        val context = if (current.length < n - 1) {
+            "^".repeat(n - 1 - current.length) + rawContext
+        } else {
+            rawContext
+        }
 
         val candidates =
             ArrayList<Pair<Char, Double>>()
@@ -243,18 +283,10 @@ class CharModel(private val context: Context) {
 
             val gram = context + char
 
-            /*
-             * For a trigram model:
-             *
-             * current = "ka"
-             * context = "ka"
-             *
-             * gram = "kat"
-             */
             val probability =
                 ngramProbabilities[gram]
 
-            if (probability != null) {
+            if (probability != null && probability > 0.0) {
                 candidates.add(
                     char to probability
                 )
@@ -266,18 +298,12 @@ class CharModel(private val context: Context) {
          * allow vowels as a safe fallback.
          */
         if (candidates.isEmpty()) {
-            return listOf(
-                'a',
-                'e',
-                'i',
-                'o',
-                'u'
-            )
+            return FALLBACK_VOWELS
         }
 
         return candidates
             .sortedByDescending { it.second }
-            .take(8)
+            .take(MAX_NEXT_CHARACTERS)
             .map { it.first }
     }
 
@@ -287,17 +313,11 @@ class CharModel(private val context: Context) {
     private fun endingScore(word: String): Double {
 
         return when {
-
             word.endsWith("a") -> 0.25
-
             word.endsWith("i") -> 0.20
-
             word.endsWith("o") -> 0.15
-
             word.endsWith("e") -> 0.10
-
             word.endsWith("u") -> 0.10
-
             else -> 0.0
         }
     }
@@ -306,9 +326,8 @@ class CharModel(private val context: Context) {
      * Remove anything that isn't a-z.
      */
     private fun cleanWord(input: String): String {
-
         return input
-            .lowercase()
+            .lowercase(Locale.ROOT)
             .filter {
                 it in 'a'..'z'
             }
@@ -318,4 +337,18 @@ class CharModel(private val context: Context) {
         val word: String,
         val score: Double
     )
+
+    private companion object {
+        const val UNKNOWN_PROBABILITY = 0.000001
+        const val BEAM_WIDTH = 40
+        const val MAX_NEXT_CHARACTERS = 8
+
+        val FALLBACK_VOWELS = listOf(
+            'a',
+            'e',
+            'i',
+            'o',
+            'u'
+        )
+    }
 }
