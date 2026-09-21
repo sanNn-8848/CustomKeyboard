@@ -11,53 +11,85 @@ class Trie {
     private val root = TrieNode()
 
     fun insert(word: String, frequency: Int = 1) {
+        val clean = word.trim().lowercase()
+
+        if (clean.isEmpty() || frequency <= 0) return
+
         var current = root
-        for (char in word.lowercase()) {
+
+        for (char in clean) {
             current = current.children.getOrPut(char) { TrieNode() }
         }
+
         current.isEndOfWord = true
         current.frequency = frequency
-        current.word = word
+        current.word = clean
     }
 
     fun search(prefix: String): List<Pair<String, Int>> {
+        val cleanPrefix = prefix.trim().lowercase()
+
+        if (cleanPrefix.isEmpty()) {
+            return getAllWords().sortedByDescending { it.second }
+        }
+
         val results = mutableListOf<Pair<String, Int>>()
         var current = root
-        
-        for (char in prefix.lowercase()) {
-            current = current.children[char] ?: return results
+
+        for (char in cleanPrefix) {
+            current = current.children[char] ?: return emptyList()
         }
-        
+
         collectWords(current, results)
+
         return results.sortedByDescending { it.second }
     }
 
-    private fun collectWords(node: TrieNode, results: MutableList<Pair<String, Int>>) {
+    private fun collectWords(
+        node: TrieNode,
+        results: MutableList<Pair<String, Int>>
+    ) {
         if (node.isEndOfWord) {
             node.word?.let { word ->
-                results.add(Pair(word, node.frequency))
+                results.add(word to node.frequency)
             }
         }
-        
-        for ((_, child) in node.children) {
+
+        for (child in node.children.values) {
             collectWords(child, results)
         }
     }
 
     fun contains(word: String): Boolean {
+        val clean = word.trim().lowercase()
+
+        if (clean.isEmpty()) return false
+
         var current = root
-        for (char in word.lowercase()) {
+
+        for (char in clean) {
             current = current.children[char] ?: return false
         }
+
         return current.isEndOfWord
     }
 
     fun getFrequency(word: String): Int {
+        val clean = word.trim().lowercase()
+
+        if (clean.isEmpty()) return 0
+
         var current = root
-        for (char in word.lowercase()) {
+
+        for (char in clean) {
             current = current.children[char] ?: return 0
         }
-        return if (current.isEndOfWord) current.frequency else 0
+
+        return if (current.isEndOfWord) {
+            current.frequency
+        } else {
+            0
+        }
     }
 
     fun getAllWords(): List<Pair<String, Int>> {
@@ -67,36 +99,51 @@ class Trie {
             if (node.isEndOfWord && node.word != null) {
                 result.add(node.word!! to node.frequency)
             }
+
             for (child in node.children.values) {
                 collect(child)
             }
         }
 
         collect(root)
+
         return result
     }
 
     fun remove(word: String): Boolean {
+        val clean = word.trim().lowercase()
+
+        if (clean.isEmpty()) return false
+
         var existed = false
 
         fun removeRec(node: TrieNode, index: Int): Boolean {
-            if (index == word.length) {
+            if (index == clean.length) {
                 existed = node.isEndOfWord
+
                 if (!existed) return false
+
                 node.isEndOfWord = false
                 node.word = null
                 node.frequency = 0
+
                 return node.children.isEmpty()
             }
-            val child = node.children[word[index].lowercaseChar()] ?: return false
+
+            val char = clean[index]
+            val child = node.children[char] ?: return false
+
             val prune = removeRec(child, index + 1)
+
             if (prune) {
-                node.children.remove(word[index].lowercaseChar())
+                node.children.remove(char)
             }
+
             return node.children.isEmpty() && !node.isEndOfWord
         }
 
-        if (word.isNotEmpty()) removeRec(root, 0)
+        removeRec(root, 0)
+
         return existed
     }
 }
