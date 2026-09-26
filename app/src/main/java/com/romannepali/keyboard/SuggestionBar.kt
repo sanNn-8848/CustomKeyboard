@@ -59,18 +59,39 @@ class SuggestionBar @JvmOverloads constructor(
     private var lastSuggestions: List<String> = emptyList()
     private var lastTapWord: String? = null
     private var lastTapTime = 0L
+    private var touchGeneration = 0L
+    private var detached = false
+
+    // A prediction result that arrived while a chip was being touched. It is
+    // applied only after the gesture finishes so the pressed chip is never
+    // destroyed between ACTION_DOWN and ACTION_UP (which swallowed the tap).
+    private var chipTapActive = false
+    private var pendingSuggestions: List<String>? = null
 
     private val longPressRunnable = Runnable {
+        if (detached) return@Runnable
+
+        val generation = touchGeneration
         val chip = pendingChip ?: return@Runnable
+        val word = pendingWord
+
+        if (generation != touchGeneration || word.isEmpty()) return@Runnable
+
         dragActive = true
         lastChip = chip
         chip.visibility = View.INVISIBLE
+
         // Keep the suggestion scroller from hijacking the gesture once we start
         // dragging toward a zone, so the chip follows the finger across the
         // entire keyboard area instead of cancelling.
         chipsScroll?.requestDisallowInterceptTouchEvent(true)
         chip.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
-        onSuggestionDragStart?.invoke(chip, pendingWord, downRawX, downRawY)
+        onSuggestionDragStart?.invoke(
+            chip,
+            word,
+            downRawX,
+            downRawY
+        )
     }
 
     init {
@@ -82,8 +103,13 @@ class SuggestionBar @JvmOverloads constructor(
         gearButton = findViewById(R.id.settings_gear)
 
         gearButton?.setOnClickListener {
-            val intent = Intent(context, SettingsActivity::class.java)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            val intent = Intent(context, SettingsActivity::class.java).apply {
+                addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP
+                )
+            }
             context.startActivity(intent)
         }
         undoButton?.setOnClickListener {
@@ -112,14 +138,43 @@ class SuggestionBar @JvmOverloads constructor(
         return dx * dx + dy * dy > touchSlop * touchSlop
     }
 
+    private fun cancelPendingTouch() {
+        touchGeneration++
+
+        mainHandler.removeCallbacks(longPressRunnable)
+
+        chipsScroll?.requestDisallowInterceptTouchEvent(false)
+
+        pendingChip = null
+        pendingWord = ""
+        dragActive = false
+    }
+
+    /**
+     * Marks the fingerprint gesture as finished and, if a prediction result was
+     * deferred while the chip was being touched, renders it now.
+     */
+    private fun endChipTouch() {
+        chipTapActive = false
+        val pending = pendingSuggestions
+        pendingSuggestions = null
+        if (pending != null) {
+            renderSuggestions(pending)
+        }
+    }
+
     private fun onChipTouch(view: View, word: String, event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                touchGeneration++
+
+                chipTapActive = true
                 pendingChip = view
                 pendingWord = word
                 downRawX = event.rawX
                 downRawY = event.rawY
                 dragActive = false
+
                 mainHandler.removeCallbacks(longPressRunnable)
                 mainHandler.postDelayed(longPressRunnable, longPressTimeout)
             }
@@ -136,15 +191,19 @@ class SuggestionBar @JvmOverloads constructor(
             MotionEvent.ACTION_UP -> {
                 mainHandler.removeCallbacks(longPressRunnable)
                 chipsScroll?.requestDisallowInterceptTouchEvent(false)
+
                 if (dragActive) {
                     dragActive = false
                     pendingChip = null
+                    pendingWord = ""
                     onSuggestionDragEnd?.invoke(event.rawX, event.rawY)
                 } else if (!movedBeyondSlop(event.rawX, event.rawY)) {
                     val now = android.os.SystemClock.uptimeMillis()
+
                     val doubleTap =
                         lastTapWord == word &&
                             now - lastTapTime <= ViewConfiguration.getDoubleTapTimeout()
+
                     if (doubleTap) {
                         lastTapWord = null
                         lastTapTime = 0L
@@ -155,18 +214,25 @@ class SuggestionBar @JvmOverloads constructor(
                         onSuggestionClickListener?.invoke(word)
                     }
                 }
+
+                pendingChip = null
                 pendingWord = ""
+                endChipTouch()
             }
 
             MotionEvent.ACTION_CANCEL -> {
                 mainHandler.removeCallbacks(longPressRunnable)
                 chipsScroll?.requestDisallowInterceptTouchEvent(false)
+
                 if (dragActive) {
                     dragActive = false
                     pendingChip = null
                     onSuggestionDragEnd?.invoke(event.rawX, event.rawY)
                 }
+
+                pendingChip = null
                 pendingWord = ""
+                endChipTouch()
             }
         }
         return true
@@ -174,6 +240,28 @@ class SuggestionBar @JvmOverloads constructor(
 
     fun showSuggestions(suggestions: List<String>) {
         if (suggestions == lastSuggestions) return
+
+        // A chip is being touched: defer the re-render until the gesture ends so
+        // the pressed view is never destroyed between ACTION_DOWN and ACTION_UP.
+        if (chipTapActive) {
+            pendingSuggestions = suggestions
+            return
+        }
+
+        renderSuggestions(suggestions)
+    }
+
+    private fun renderSuggestions(suggestions: List<String>) {
+        if (suggestions == lastSuggestions) return
+
+        cancelPendingTouch()
+
+        chipsContainer?.let { container ->
+            for (i in 0 until container.childCount) {
+                container.getChildAt(i).animate().cancel()
+            }
+        }
+
         lastSuggestions = suggestions
         chipsContainer?.let { container ->
             container.removeAllViews()
@@ -229,10 +317,17 @@ class SuggestionBar @JvmOverloads constructor(
     }
 
     fun clearSuggestions() {
-        chipsContainer?.removeAllViews()
+        cancelPendingTouch()
+        pendingSuggestions = null
+
+        chipsContainer?.let { container ->
+            for (i in 0 until container.childCount) {
+                container.getChildAt(i).animate().cancel()
+            }
+            container.removeAllViews()
+        }
+
         lastSuggestions = emptyList()
-        mainHandler.removeCallbacks(longPressRunnable)
-        pendingChip = null
         restoreChip()
     }
 
@@ -274,6 +369,27 @@ class SuggestionBar @JvmOverloads constructor(
         undoButton?.imageTintList = tint
         centerUndoButton?.imageTintList = tint
         gearButton?.imageTintList = tint
+    }
+
+    override fun onDetachedFromWindow() {
+        detached = true
+
+        chipTapActive = false
+        pendingSuggestions = null
+        cancelPendingTouch()
+
+        chipsContainer?.let { container ->
+            for (i in 0 until container.childCount) {
+                container.getChildAt(i).animate().cancel()
+            }
+        }
+
+        super.onDetachedFromWindow()
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        detached = false
     }
 
     private fun dp(value: Int): Int =

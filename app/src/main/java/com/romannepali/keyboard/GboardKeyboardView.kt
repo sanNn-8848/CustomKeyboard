@@ -102,6 +102,10 @@ class GboardKeyboardView @JvmOverloads constructor(
     // Every key knows its row so a pressed key's popup can be raised above neighbours.
     private val keyRows = HashMap<View, View>()
 
+    // Track every key's delayed touch work so a rebuild/detach can cancel it
+    // before the dying views are discarded.
+    private val pendingKeyRunnables = mutableListOf<Pair<View, Runnable>>()
+
     // Number row sits slightly shorter than letter rows (Gboard style).
     private val NUMBER_ROW_WEIGHT = 0.92f
 
@@ -144,6 +148,8 @@ class GboardKeyboardView @JvmOverloads constructor(
     private var soundSpace = 0
     private var soundDelete = 0
 
+    private val readySounds = mutableSetOf<Int>()
+
     init {
         orientation = VERTICAL
         gravity = Gravity.CENTER
@@ -162,22 +168,40 @@ class GboardKeyboardView @JvmOverloads constructor(
 
     private fun ensureSound() {
         if (soundPool != null) return
-        soundPool = SoundPool.Builder().setMaxStreams(3).build()
-        soundLetter = soundPool!!.load(context, R.raw.key_click_letter, 1)
-        soundSpace = soundPool!!.load(context, R.raw.key_click_space, 1)
-        soundDelete = soundPool!!.load(context, R.raw.key_click_delete, 1)
+
+        val pool = SoundPool.Builder()
+            .setMaxStreams(4)
+            .build()
+
+        pool.setOnLoadCompleteListener { _, sampleId, status ->
+            post {
+                if (soundPool !== pool) return@post
+                if (status == 0) {
+                    readySounds.add(sampleId)
+                } else {
+                    readySounds.remove(sampleId)
+                }
+            }
+        }
+
+        soundPool = pool
+        soundLetter = pool.load(context, R.raw.key_click_letter, 1)
+        soundSpace = pool.load(context, R.raw.key_click_space, 1)
+        soundDelete = pool.load(context, R.raw.key_click_delete, 1)
     }
 
     private fun playSound(kind: Int) {
         if (!Prefs.sound(context)) return
         ensureSound()
+        val pool = soundPool ?: return
         val stream = when (kind) {
             SOUND_SPACE -> soundSpace
             SOUND_DELETE -> soundDelete
             else -> soundLetter
         }
+        if (stream == 0 || stream !in readySounds) return
         // Original click: single fixed pitch/volume, matching v1.1.16 and earlier.
-        soundPool?.play(stream, 0.8f, 0.8f, 1, 0, 1f)
+        pool.play(stream, 0.8f, 0.8f, 1, 0, 1f)
     }
 
     // Haptics: crisp impulse for letters, longer/stronger for structural keys.
@@ -214,11 +238,41 @@ class GboardKeyboardView @JvmOverloads constructor(
             .start()
     }
 
+    private fun postKeyDelayed(
+        key: View,
+        runnable: Runnable,
+        delay: Long
+    ) {
+        pendingKeyRunnables.add(key to runnable)
+        key.postDelayed(runnable, delay)
+    }
+
+    private fun cancelKeyRunnable(
+        key: View,
+        runnable: Runnable
+    ) {
+        key.removeCallbacks(runnable)
+        pendingKeyRunnables.removeAll { it.first === key && it.second === runnable }
+    }
+
+    private fun cancelAllKeyWork() {
+        pendingKeyRunnables.forEach { (key, runnable) ->
+            key.removeCallbacks(runnable)
+        }
+        pendingKeyRunnables.clear()
+
+        // Cancel popup/key animations as part of the same lifecycle boundary.
+        keyRows.keys.forEach { key ->
+            key.animate().cancel()
+        }
+    }
+
     // ------------------------------------------------------------------
     // Keyboard construction
     // ------------------------------------------------------------------
 
     private fun buildKeyboard() {
+        cancelAllKeyWork()
         removeAllViews()
         letterKeys.clear()
         keyRows.clear()
@@ -287,18 +341,18 @@ class GboardKeyboardView @JvmOverloads constructor(
 
         refreshKeyLabels()
 
-        // Preferred height (scale + orientation aware). The view's own measure
-        // clamps to whatever the window actually allows, so the keyboard always
-        // fits and stays docked to the bottom edge.
-        layoutParams?.let { lp ->
-            lp.height = keyboardHeightPx()
-            layoutParams = lp
-        }
+        // Height is resolved by onMeasure from the window/wrapper constraints,
+        // so no explicit layoutParams height is set here (responsive sizing).
     }
 
     private fun keyboardHeightPx(): Int {
         val landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-        val letterRow = (if (landscape) dp(LETTER_ROW_LANDSCAPE) else dp(LETTER_ROW)) * sizeFactor()
+
+        // Landscape layout policy: 34dp letter rows (portrait keeps LETTER_ROW).
+        // At 34dp: 34*4.92 + 20 chin = ~187dp keyboard body -> total ~255dp with
+        // the compacted landscape carousel/suggestion strips (layout-land xml).
+        val letterRowDp = if (landscape) 34 else LETTER_ROW
+        val letterRow = dp(letterRowDp) * sizeFactor()
         val withNumber = !isSymbols
         val totalWeight = 4f + if (withNumber) NUMBER_ROW_WEIGHT else 0f
         return (letterRow * totalWeight).toInt() + dp(CHIN)
@@ -306,17 +360,48 @@ class GboardKeyboardView @JvmOverloads constructor(
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        rebuild()
+        // Rotation must not tear down the key hierarchy: keeping it alive lets
+        // shift/symbol state, the current word, and suggestions survive. Just
+        // re-apply the side padding for the new width; onMeasure re-fits the
+        // height to the new orientation on the next layout pass.
+        post {
+            setPadding(keyboardSideMargin(), 0, keyboardSideMargin(), 0)
+            requestLayout()
+            invalidate()
+        }
+    }
+
+    override fun onDetachedFromWindow() {
+        cancelAllKeyWork()
+
+        soundPool?.release()
+        soundPool = null
+
+        readySounds.clear()
+
+        soundLetter = 0
+        soundSpace = 0
+        soundDelete = 0
+        super.onDetachedFromWindow()
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        super.onMeasure(widthMeasureSpec, heightMeasureSpec)
-        // The keyboard fills whatever height the window allows, but never grows
-        // past the preferred size (so it can't swallow the whole screen).
+        // The keyboard sizes itself to its preferred height (scale + orientation
+        // aware), but never exceeds what the parent/window actually allows. This
+        // replaces the old fixed-height/fixed-168dp behavior so the keyboard
+        // stays consistent in portrait and landscape and after rotations.
         val preferred = keyboardHeightPx()
-        if (measuredHeight > preferred) {
-            setMeasuredDimension(measuredWidth, preferred)
+        val heightSize = MeasureSpec.getSize(heightMeasureSpec)
+        val targetHeight = when (MeasureSpec.getMode(heightMeasureSpec)) {
+            MeasureSpec.EXACTLY -> heightSize
+            MeasureSpec.AT_MOST -> minOf(preferred, heightSize)
+            else -> preferred
         }
+        // Re-measure with the resolved height so the weighted rows distribute
+        // over the full target instead of a zero-height first pass.
+        val heightSpec = MeasureSpec.makeMeasureSpec(targetHeight, MeasureSpec.EXACTLY)
+        super.onMeasure(widthMeasureSpec, heightSpec)
+        setMeasuredDimension(measuredWidth, targetHeight)
     }
 
     /**
@@ -533,8 +618,8 @@ class GboardKeyboardView @JvmOverloads constructor(
                     showPopup(popup, main.text, key)
                     if (event.actionMasked == MotionEvent.ACTION_DOWN) {
                         longPressFired = false
-                        key.removeCallbacks(longPressRunnable)
-                        key.postDelayed(longPressRunnable, LONG_PRESS_TIMEOUT)
+                        cancelKeyRunnable(key, longPressRunnable)
+                        postKeyDelayed(key, longPressRunnable, LONG_PRESS_TIMEOUT)
                     }
                     true
                 }
@@ -545,14 +630,14 @@ class GboardKeyboardView @JvmOverloads constructor(
                     val inside = rect.contains(event.rawX.toInt(), event.rawY.toInt())
                     key.isPressed = inside
                     if (!inside) {
-                        key.removeCallbacks(longPressRunnable)
+                        cancelKeyRunnable(key, longPressRunnable)
                         hidePopup(popup, key)
                     }
                     true
                 }
 
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    key.removeCallbacks(longPressRunnable)
+                    cancelKeyRunnable(key, longPressRunnable)
                     key.isPressed = false
                     pressScaleOff(key)
                     hidePopup(popup, key)
@@ -657,7 +742,7 @@ class GboardKeyboardView @JvmOverloads constructor(
                 if (longPressFired && repeat) {
                     playSound(sound)
                     click()
-                    key.postDelayed(this, REPEAT_INTERVAL)
+                    postKeyDelayed(key, this, REPEAT_INTERVAL)
                 }
             }
         }
@@ -666,7 +751,7 @@ class GboardKeyboardView @JvmOverloads constructor(
             longPressFired = true
             if (repeat) {
                 click()
-                key.postDelayed(repeatRunnable, REPEAT_INTERVAL)
+                postKeyDelayed(key, repeatRunnable, REPEAT_INTERVAL)
             }
         }
 
@@ -681,7 +766,7 @@ class GboardKeyboardView @JvmOverloads constructor(
                     longPressFired = false
                     click()
                     if (repeat && event.actionMasked == MotionEvent.ACTION_DOWN) {
-                        key.postDelayed(longPressRunnable, LONG_PRESS_TIMEOUT)
+                        postKeyDelayed(key, longPressRunnable, LONG_PRESS_TIMEOUT)
                     }
                     true
                 }
@@ -695,15 +780,15 @@ class GboardKeyboardView @JvmOverloads constructor(
                         val inside = rect.contains(event.rawX.toInt(), event.rawY.toInt())
                         key.isPressed = inside
                         if (!inside) {
-                            key.removeCallbacks(longPressRunnable)
+                            cancelKeyRunnable(key, longPressRunnable)
                         }
                         true
                     }
                 }
 
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    key.removeCallbacks(longPressRunnable)
-                    key.removeCallbacks(repeatRunnable)
+                    cancelKeyRunnable(key, longPressRunnable)
+                    cancelKeyRunnable(key, repeatRunnable)
                     longPressFired = false
                     key.isPressed = false
                     pressScaleOff(key)
@@ -732,24 +817,30 @@ class GboardKeyboardView @JvmOverloads constructor(
         }
         keyRows[key] = row
 
+        // Space commits on release so a long-press can't leak an extra space: a
+        // normal tap inserts " " on ACTION_UP, while a 250ms hold instead opens the
+        // language switcher and inserts nothing.
+        var longPressFired = false
+
         val toggleKeyboardRunnable = Runnable {
+            longPressFired = true
             hapticStrong(key)
             onKeyLongPressed?.invoke(" ")
         }
 
-        // Space commits on touch-down too: the old click-on-lift could be cancelled
-        // by finger drift / a fast second tap, merging words ("friday also" -> "fridalso").
         key.setOnTouchListener { _, event ->
             when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
+                MotionEvent.ACTION_DOWN -> {
                     key.isPressed = true
                     pressScaleOn(key)
                     playSound(SOUND_SPACE)
-                    onKeyPressed?.invoke(" ")
-                    // Only the initial finger can arm the long-press keyboard switcher.
-                    if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-                        key.postDelayed(toggleKeyboardRunnable, LONG_PRESS_TIMEOUT)
-                    }
+                    longPressFired = false
+                    cancelKeyRunnable(key, toggleKeyboardRunnable)
+                    postKeyDelayed(
+                        key,
+                        toggleKeyboardRunnable,
+                        LONG_PRESS_TIMEOUT
+                    )
                     true
                 }
 
@@ -759,13 +850,23 @@ class GboardKeyboardView @JvmOverloads constructor(
                     val inside = rect.contains(event.rawX.toInt(), event.rawY.toInt())
                     key.isPressed = inside
                     if (!inside) {
-                        key.removeCallbacks(toggleKeyboardRunnable)
+                        cancelKeyRunnable(key, toggleKeyboardRunnable)
                     }
                     true
                 }
 
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    key.removeCallbacks(toggleKeyboardRunnable)
+                MotionEvent.ACTION_UP -> {
+                    cancelKeyRunnable(key, toggleKeyboardRunnable)
+                    if (!longPressFired) {
+                        onKeyPressed?.invoke(" ")
+                    }
+                    key.isPressed = false
+                    pressScaleOff(key)
+                    true
+                }
+
+                MotionEvent.ACTION_CANCEL -> {
+                    cancelKeyRunnable(key, toggleKeyboardRunnable)
                     key.isPressed = false
                     pressScaleOff(key)
                     true

@@ -234,19 +234,41 @@ class RomanNepaliIME : InputMethodService() {
                     "↵" -> {
                         finishCurrentWord()
                         suggestionBar?.clearSuggestions()
+
                         val editorInfo = currentInputEditorInfo
-                        val action = editorInfo.imeOptions and EditorInfo.IME_MASK_ACTION
-                        val multiline =
-                            (editorInfo.inputType and InputType.TYPE_TEXT_FLAG_MULTI_LINE) != 0
+                        val imeOptions = editorInfo?.imeOptions ?: 0
+                        val action = imeOptions and EditorInfo.IME_MASK_ACTION
+                        val inputType = editorInfo?.inputType ?: 0
+
                         val noEnterAction =
-                            (editorInfo.imeOptions and EditorInfo.IME_FLAG_NO_ENTER_ACTION) != 0
-                        if (multiline || noEnterAction ||
-                            action == EditorInfo.IME_ACTION_NONE ||
-                            action == EditorInfo.IME_ACTION_UNSPECIFIED
-                        ) {
-                            ic.commitText("\n", 1)
-                        } else {
-                            ic.performEditorAction(action)
+                            (imeOptions and EditorInfo.IME_FLAG_NO_ENTER_ACTION) != 0
+
+                        // An explicit editor action wins over a multiline flag so
+                        // search/URL fields really submit instead of inserting "\n".
+                        val hasExplicitAction =
+                            action == EditorInfo.IME_ACTION_GO ||
+                                action == EditorInfo.IME_ACTION_SEARCH ||
+                                action == EditorInfo.IME_ACTION_NEXT ||
+                                action == EditorInfo.IME_ACTION_DONE ||
+                                action == EditorInfo.IME_ACTION_SEND
+
+                        val multiline =
+                            (inputType and InputType.TYPE_TEXT_FLAG_MULTI_LINE) != 0
+
+                        when {
+                            hasExplicitAction && !noEnterAction -> {
+                                ic.performEditorAction(action)
+                            }
+
+                            multiline || noEnterAction ||
+                                action == EditorInfo.IME_ACTION_NONE ||
+                                action == EditorInfo.IME_ACTION_UNSPECIFIED -> {
+                                ic.commitText("\n", 1)
+                            }
+
+                            else -> {
+                                ic.performEditorAction(action)
+                            }
                         }
                     }
 
@@ -565,10 +587,34 @@ class RomanNepaliIME : InputMethodService() {
 
         if (currentWord.isNotEmpty()) {
             val expected = currentWord.toString()
+            val actual = ic.getTextBeforeCursor(expected.length, 0)?.toString()
 
-            if (!deleteExpectedTextBeforeCursor(ic, expected)) {
-                // Our internal state doesn't match the editor.
-                // Do not risk deleting unrelated text.
+            if (actual != expected) {
+                // currentWord may be stale. Re-sync from the editor; the safe
+                // deletion below then matches the true current text.
+                val synced = ic.getTextBeforeCursor(48, 0)?.toString().orEmpty()
+                var syncStart = synced.length
+                while (syncStart > 0) {
+                    val c = synced[syncStart - 1]
+                    if (c.isWhitespace() || c == '.' || c == ',' || c == ';') break
+                    syncStart--
+                }
+                val editorWord = synced.substring(syncStart)
+                if (editorWord.isEmpty()) {
+                    // No typed word before the cursor: nothing to replace.
+                    currentWord.clear()
+                    suggestionJob++
+                    suggestionBar?.clearSuggestions()
+                    updateUndoUi()
+                    return
+                }
+                currentWord.setLength(0)
+                currentWord.append(editorWord)
+            }
+
+            if (!deleteExpectedTextBeforeCursor(ic, currentWord.toString())) {
+                // The editor text still does not match our tracked word.
+                // Never perform a blind deletion.
                 currentWord.clear()
                 suggestionJob++
                 suggestionBar?.clearSuggestions()
@@ -660,8 +706,14 @@ class RomanNepaliIME : InputMethodService() {
 
         updateFullscreenMode()
 
-        keyboardView?.rebuild()
-        mainView?.requestApplyInsets()
+        // The keyboard view re-measures itself for the new orientation and does
+        // not rebuild (rotation stability: suggestion/word/shift state survive).
+        // Here we only make sure the system-bar inset is re-applied afterwards.
+        mainHandler.post {
+            if (mainView != null) {
+                mainView?.requestApplyInsets()
+            }
+        }
     }
 
     override fun onStartInput(
@@ -673,22 +725,28 @@ class RomanNepaliIME : InputMethodService() {
         // Bulletproof: always clear a stuck overlay when a new input starts.
         dragOverlay?.endCurrentDragIfAny()
 
-        // Invalidate any in-flight suggestion computation.
-        suggestionJob++
-        currentWord.clear()
-        contextWords.clear()
+        // The typed word and suggestions are NOT cleared here: rotation re-enters
+        // the same editor with restarting=true/false, and onUpdateSelection then
+        // synchronizes the cached word and suggestion bar against the editor's
+        // real text (self-correcting). Clearing here is what made rotation look
+        // like a keyboard restart ("mero nam" + suggestions vanishing).
         deletedText = null
         lastSuppressedWord = null
-        suggestionBar?.clearSuggestions()
         updateUndoUi()
         autoShiftApplied = false
         userShiftOverride = false
+
         keyboardView?.onShiftToggled = { _ ->
             if (isSentenceStart()) userShiftOverride = true
         }
         updateAutoShift()
         keyboardView?.applyThemeIfChanged()
         applyKeyboardTheme()
+
+        // Re-render suggestions for whatever word survives in the editor. On
+        // rotation this brings back the suggestions bar for "mero nam"; in a
+        // genuinely new (empty) field it clears to nothing via the same path.
+        updateSuggestions()
     }
 
     override fun onUpdateSelection(

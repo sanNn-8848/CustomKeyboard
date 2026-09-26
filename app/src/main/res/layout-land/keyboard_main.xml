@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/main_keyboard_container"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/bg_keyboard_container_dark">
+
+    <android.widget.ImageView
+        android:id="@+id/frost_glow"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:src="@drawable/bg_glow_dark"
+        android:contentDescription="@null" />
+
+    <android.widget.ImageView
+        android:id="@+id/frost_mountains"
+        android:layout_width="match_parent"
+        android:layout_height="72dp"
+        android:layout_gravity="bottom"
+        android:scaleType="fitXY"
+        android:src="@drawable/bg_mountains_dark"
+        android:contentDescription="@null" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:orientation="vertical">
+
+        <!-- Feature Carousel Strip (compact for landscape) -->
+        <com.romannepali.keyboard.FeatureCarouselView
+            android:id="@+id/feature_carousel"
+            android:layout_width="match_parent"
+            android:layout_height="32dp"
+            android:background="@drawable/bg_prediction_bar" />
+
+        <!-- Feature Content Pane (compact for landscape) -->
+        <FrameLayout
+            android:id="@+id/feature_pane"
+            android:layout_width="match_parent"
+            android:layout_height="36dp"
+            android:background="@drawable/bg_prediction_bar">
+
+            <com.romannepali.keyboard.SuggestionBar
+                android:id="@+id/suggestion_bar"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:orientation="horizontal" />
+        </FrameLayout>
+
+        <!-- Keyboard -->
+        <com.romannepali.keyboard.GboardKeyboardView
+            android:id="@+id/keyboard_view"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@android:color/transparent" />
+    </LinearLayout>
+
+</FrameLayout>
