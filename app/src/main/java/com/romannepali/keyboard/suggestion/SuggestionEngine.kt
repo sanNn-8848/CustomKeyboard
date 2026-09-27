@@ -1,5 +1,6 @@
 package com.romannepali.keyboard.suggestion
 
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import org.json.JSONObject
 import kotlin.math.abs
@@ -105,8 +106,8 @@ class SuggestionEngine(private val context: android.content.Context) {
         context: PredictionContext,
         limit: Int = 3
     ): List<PredictionResult> {
-        val input = context.currentWord.trim().lowercase()
-        val prev = context.previousWords.map { it.trim().lowercase() }.filter { it.isNotEmpty() }
+        val input = context.currentWord.trim().lowercase(Locale.ROOT)
+        val prev = context.previousWords.map { it.trim().lowercase(Locale.ROOT) }.filter { it.isNotEmpty() }
 
         // Word boundary: generate the NEXT word from context bigrams/trigrams.
         if (input.isEmpty()) return predictNextWord(prev, limit)
@@ -147,7 +148,6 @@ class SuggestionEngine(private val context: android.content.Context) {
             if (prefixKey.isNotEmpty()) {
                 variantGroups.forEach { (key, members) ->
                     if (key.startsWith(prefixKey)) {
-                        dedupeVariants(contributions)
                         members.forEach { word ->
                             bump(word, CandidateSource.PREFIX, VARIANT_BOOST)
                             bump(word, CandidateSource.DICTIONARY, freqLog(trie.getFrequency(word)))
@@ -204,15 +204,15 @@ class SuggestionEngine(private val context: android.content.Context) {
         // 2. Score each candidate as a weighted sum of its source layers.
         var results = contributions
             .map { (word, sources) ->
-                val weighted = HashMap(sources.mapValues { (source, value) -> weights[source]!! * value })
+                val weighted = HashMap(sources.mapValues { (source, value) -> (weights[source] ?: 0.0) * value })
                 // The character model participates in ranking, not just fill.
                 weighted.merge(
                     CandidateSource.CHAR_MODEL,
-                    weights[CandidateSource.CHAR_MODEL]!! * normCharScore(word),
+                    (weights[CandidateSource.CHAR_MODEL] ?: 0.0) * normCharScore(word),
                     Double::plus
                 )
                 val total = weighted.values.sum()
-                val best = weighted.maxByOrNull { it.value }!!.key
+                val best = weighted.maxByOrNull { it.value }?.key ?: CandidateSource.DICTIONARY
                 PredictionResult(
                     word = word,
                     score = total.toFloat(),
@@ -228,7 +228,7 @@ class SuggestionEngine(private val context: android.content.Context) {
         if (favoriteSnapshot.isNotEmpty()) {
             results = results
                 .map {
-                    if (it.word.lowercase() in favoriteSnapshot)
+                    if (it.word.lowercase(Locale.ROOT) in favoriteSnapshot)
                         it.copy(score = it.score + FAVORITE_BOOST)
                     else it
                 }
@@ -415,7 +415,7 @@ class SuggestionEngine(private val context: android.content.Context) {
         word: String,
         previousWords: List<String> = emptyList()
     ): Correction {
-        val input = word.trim().lowercase()
+        val input = word.trim().lowercase(Locale.ROOT)
 
         if (input.isEmpty()) {
             return Correction(input, 0f, false)
@@ -477,7 +477,7 @@ class SuggestionEngine(private val context: android.content.Context) {
 
     fun learnWord(word: String) {
         synchronized(stateLock) {
-            val clean = word.lowercase()
+            val clean = word.lowercase(Locale.ROOT)
             if (clean.isBlank()) return
             syncLearnedFromStorage()
             val count = (learnedWords[clean] ?: 0) + 1
@@ -497,12 +497,12 @@ class SuggestionEngine(private val context: android.content.Context) {
         word: String
     ) {
         synchronized(stateLock) {
-            val clean = word.lowercase()
+            val clean = word.lowercase(Locale.ROOT)
             if (clean.isBlank()) return
 
             val previous = previousWord
                 ?.trim()
-                ?.lowercase()
+                ?.lowercase(Locale.ROOT)
                 ?.takeIf { it.isNotEmpty() }
 
             if (previous != null) {
@@ -513,7 +513,7 @@ class SuggestionEngine(private val context: android.content.Context) {
 
     fun addPersonalWord(word: String): Boolean {
         synchronized(stateLock) {
-            val clean = word.trim().lowercase()
+            val clean = word.trim().lowercase(Locale.ROOT)
             if (clean.isEmpty()) return false
             for (ch in clean) {
                 if (!ch.isLetter() && ch != ' ' && ch != '\'') return false
@@ -532,7 +532,7 @@ class SuggestionEngine(private val context: android.content.Context) {
 
     fun removePersonalWord(word: String) {
         synchronized(stateLock) {
-            val clean = word.trim().lowercase()
+            val clean = word.trim().lowercase(Locale.ROOT)
             val saved = store.loadSaved().toMutableList()
             if (saved.remove(clean)) {
                 store.saveSaved(saved)
@@ -547,7 +547,7 @@ class SuggestionEngine(private val context: android.content.Context) {
     /** Hides a word from future suggestions without erasing its learned history. */
     fun suppress(word: String) {
         synchronized(stateLock) {
-            if (suppressedWords.add(word.lowercase())) {
+            if (suppressedWords.add(word.lowercase(Locale.ROOT))) {
                 store.saveSuppressed(suppressedWords)
             }
         }
@@ -556,13 +556,15 @@ class SuggestionEngine(private val context: android.content.Context) {
     /** Re-enables a previously suppressed word (used by undo and settings). */
     fun unsuppress(word: String) {
         synchronized(stateLock) {
-            if (suppressedWords.remove(word.lowercase())) {
+            if (suppressedWords.remove(word.lowercase(Locale.ROOT))) {
                 store.saveSuppressed(suppressedWords)
             }
         }
     }
 
-    fun getSuppressedWords(): List<String> = suppressedWords.toList().sorted()
+    fun getSuppressedWords(): List<String> = synchronized(stateLock) {
+        suppressedWords.toList().sorted()
+    }
 
     fun clearSuppressedWords() {
         synchronized(stateLock) {
@@ -574,7 +576,7 @@ class SuggestionEngine(private val context: android.content.Context) {
     /** Boosts a word so it surfaces near the top of suggestions. */
     fun favorite(word: String) {
         synchronized(stateLock) {
-            if (favoriteWords.add(word.lowercase())) {
+            if (favoriteWords.add(word.lowercase(Locale.ROOT))) {
                 store.saveFavorites(favoriteWords)
                 scoreCache.clear()
             }
@@ -583,16 +585,20 @@ class SuggestionEngine(private val context: android.content.Context) {
 
     fun unfavorite(word: String) {
         synchronized(stateLock) {
-            if (favoriteWords.remove(word.lowercase())) {
+            if (favoriteWords.remove(word.lowercase(Locale.ROOT))) {
                 store.saveFavorites(favoriteWords)
                 scoreCache.clear()
             }
         }
     }
 
-    fun isFavorite(word: String): Boolean = word.lowercase() in favoriteWords
+    fun isFavorite(word: String): Boolean = synchronized(stateLock) {
+        word.lowercase(Locale.ROOT) in favoriteWords
+    }
 
-    fun getFavorites(): List<String> = favoriteWords.toList().sorted()
+    fun getFavorites(): List<String> = synchronized(stateLock) {
+        favoriteWords.toList().sorted()
+    }
 
     fun clearFavorites() {
         synchronized(stateLock) {
@@ -603,19 +609,19 @@ class SuggestionEngine(private val context: android.content.Context) {
     }
 
     /** Returns [word] with its remembered case applied: UPPER, lower, or as-is. */
-    fun applyCase(word: String): String {
-        val mode = caseOverrides[word.lowercase()] ?: return word
-        return when (mode) {
-            "upper" -> word.uppercase()
-            "lower" -> word.lowercase()
+    fun applyCase(word: String): String = synchronized(stateLock) {
+        val mode = caseOverrides[word.lowercase(Locale.ROOT)] ?: return@synchronized word
+        when (mode) {
+            "upper" -> word.uppercase(Locale.ROOT)
+            "lower" -> word.lowercase(Locale.ROOT)
             else -> word
         }
     }
 
     /** Cycles the remembered case for [word] (upper → lower → normal) and returns
      *  the freshly cased word. */
-    fun cycleCase(word: String): String {
-        val key = word.lowercase()
+    fun cycleCase(word: String): String = synchronized(stateLock) {
+        val key = word.lowercase(Locale.ROOT)
         val next = when (caseOverrides[key]) {
             "upper" -> "lower"
             "lower" -> null
@@ -623,7 +629,7 @@ class SuggestionEngine(private val context: android.content.Context) {
         }
         if (next == null) caseOverrides.remove(key) else caseOverrides[key] = next
         store.saveCaseOverrides(caseOverrides)
-        return applyCase(word)
+        applyCase(word)
     }
 
     fun getLearnedWords(): List<Pair<String, Int>> {
@@ -637,7 +643,7 @@ class SuggestionEngine(private val context: android.content.Context) {
     fun removeLearnedWord(word: String) {
         synchronized(stateLock) {
             syncLearnedFromStorage()
-            if (learnedWords.remove(word.lowercase()) != null) {
+            if (learnedWords.remove(word.lowercase(Locale.ROOT)) != null) {
                 restoreTrieEntry(word)
                 knownWordsCache = null
                 persistLearned()
@@ -661,8 +667,8 @@ class SuggestionEngine(private val context: android.content.Context) {
             words.forEach { (word, count) ->
                 learnedWords[word] = count
                 // Restore the word's rightful rank (novel words come back at full count).
-                if (count > trie.getFrequency(word.lowercase())) {
-                    trie.insert(word.lowercase(), count)
+                if (count > trie.getFrequency(word.lowercase(Locale.ROOT))) {
+                    trie.insert(word.lowercase(Locale.ROOT), count)
                 }
             }
             knownWordsCache = null
@@ -697,7 +703,7 @@ class SuggestionEngine(private val context: android.content.Context) {
     /** Puts a word back to its pre-learning trie state: personal words keep their
      *  boost, dictionary words their base frequency, novel words disappear. */
     private fun restoreTrieEntry(word: String) {
-        val key = word.lowercase()
+        val key = word.lowercase(Locale.ROOT)
         when {
             key in store.loadSaved() -> trie.insert(key, SAVED_WORD_FREQUENCY)
             baseFrequencies.containsKey(key) -> trie.insert(key, baseFrequencies.getValue(key))

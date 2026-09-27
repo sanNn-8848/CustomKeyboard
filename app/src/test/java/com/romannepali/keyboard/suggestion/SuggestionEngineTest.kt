@@ -2,6 +2,8 @@ package com.romannepali.keyboard.suggestion
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import java.util.Locale
+import java.util.concurrent.CopyOnWriteArrayList
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -230,5 +232,85 @@ class SuggestionEngineTest {
         assertFalse("saved list still holds the word", engine.getSavedWords().contains("meroketo"))
         val words = engine.predict(PredictionContext("merok"), limit = 5).map { it.word }
         assertFalse("word still predicted after removal: $words", words.contains("meroketo"))
+    }
+
+    @Test
+    fun cycleCase_isSafeUnderConcurrentPredictionAndAccessors() {
+        val word = "namaste"
+        // Reset to the no-override state regardless of any prior test state.
+        var guard = 0
+        while (engine.applyCase(word) != word && guard < 8) {
+            engine.cycleCase(word)
+            guard++
+        }
+        assertEquals(word, engine.applyCase(word))
+
+        val failures = CopyOnWriteArrayList<Throwable>()
+        val workers = (0 until 4).map { i ->
+            Thread({
+                try {
+                    repeat(300) {
+                        engine.predict(PredictionContext("nama"), limit = 3)
+                        engine.isFavorite("namaste")
+                        engine.getFavorites()
+                        engine.getSuppressedWords()
+                        engine.applyCase(word)
+                    }
+                } catch (t: Throwable) {
+                    failures.add(t)
+                }
+            }, "suggestion-accessor-$i")
+        }
+        workers.forEach { it.start() }
+
+        val cycleFailures = CopyOnWriteArrayList<Throwable>()
+        val cycler = Thread({
+            try {
+                repeat(300) {
+                    engine.cycleCase(word)
+                    engine.applyCase(word)
+                }
+            } catch (t: Throwable) {
+                cycleFailures.add(t)
+            }
+        }, "suggestion-cycler")
+        cycler.start()
+
+        cycler.join()
+        workers.forEach { it.join() }
+        assertTrue("accessor failures: $failures", failures.isEmpty())
+        assertTrue("cycleCase failures: $cycleFailures", cycleFailures.isEmpty())
+
+        // Leave the case override clean for other tests.
+        guard = 0
+        while (engine.applyCase(word) != word && guard < 8) {
+            engine.cycleCase(word)
+            guard++
+        }
+        assertEquals(word, engine.applyCase(word))
+    }
+
+    @Test
+    fun caseFolding_isLocaleIndependent() {
+        val originalLocale = Locale.getDefault()
+        try {
+            Locale.setDefault(Locale("tr", "TR"))
+
+            // Input normalization must not fold 'I' into dotless 'ı' under a
+            // Turkish locale: "DIN" must resolve to the "din" dictionary word.
+            val dinWords = engine.predict(PredictionContext("DIN"), limit = 5).map { it.word }
+            assertTrue("DIN not resolved under Turkish locale: $dinWords", "din" in dinWords)
+            assertFalse("dotless ı leaked into predictions: $dinWords", dinWords.any { 'ı' in it })
+
+            // Case cycling overrides must stay ASCII even under Turkish locale
+            // (uppercase of 'i' would otherwise become dotted capital 'İ').
+            assertEquals("DIN", engine.cycleCase("din"))
+            assertEquals("DIN", engine.applyCase("din"))
+            assertEquals("din", engine.cycleCase("din")) // lower
+            assertEquals("din", engine.cycleCase("din")) // back to normal
+            assertEquals("din", engine.applyCase("din"))
+        } finally {
+            Locale.setDefault(originalLocale)
+        }
     }
 }
