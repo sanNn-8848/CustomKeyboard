@@ -73,6 +73,10 @@ class FeatureCarouselView @JvmOverloads constructor(
         val cy = height / 2f
         val spacing = itemSpacing
 
+        // Icon gets most of the strip height, label a smaller slice; never clip.
+        val iconBudget = height * 0.62f
+        val labelBudget = height * 0.34f
+
         // Draw items from farthest to nearest so center overlaps edges.
         for (raw in -2..2) {
             val d = raw.toFloat()
@@ -105,17 +109,56 @@ class FeatureCarouselView @JvmOverloads constructor(
             if (isCenter) {
                 iconPaint.alpha = (alpha * 255).toInt()
                 labelPaint.alpha = (alpha * 255).toInt()
-                canvas.drawText(item.icon, x, cy - 4 * density, iconPaint)
-                canvas.drawText(item.label, x, cy + 14 * density, labelPaint)
+                val iconBase = fittedBaseline(iconPaint, 24f * density, iconBudget, cy - 3f * density)
+                val labelBase = fittedBaseline(labelPaint, 11f * density, labelBudget, cy + 12.5f * density)
+                canvas.drawText(item.icon, x, iconBase, iconPaint)
+                canvas.drawText(item.label, x, labelBase, labelPaint)
             } else {
                 dimPaint.alpha = (alpha * 255).toInt()
                 dimLabelPaint.alpha = (alpha * 255).toInt()
-                canvas.drawText(item.icon, x, cy + yOffset - 2 * density, dimPaint)
-                canvas.drawText(item.label, x, cy + yOffset + 10 * density, dimLabelPaint)
+                val iconBase = fittedBaseline(dimPaint, 20f * density, iconBudget, cy + yOffset - 2f * density)
+                val labelBase = fittedBaseline(dimLabelPaint, 10f * density, labelBudget, cy + yOffset + 11f * density)
+                canvas.drawText(item.icon, x, iconBase, dimPaint)
+                canvas.drawText(item.label, x, labelBase, dimLabelPaint)
             }
 
             canvas.restore()
         }
+    }
+
+    /**
+     * Sizes [paint] so its glyph fits within [budget] (but never below 45% of
+     * the desired size) and returns the baseline that centers it on [centerY].
+     */
+    private fun fittedBaseline(paint: Paint, desiredSize: Float, budget: Float, centerY: Float): Float {
+        paint.textSize = desiredSize
+        val fm = paint.fontMetrics
+        val glyphH = fm.descent - fm.ascent
+        if (glyphH > 0f && glyphH > budget) {
+            paint.textSize = desiredSize * (budget / glyphH).coerceAtLeast(0.45f)
+        }
+        val fitted = paint.fontMetrics
+        val baseline = centerY - (fitted.ascent + fitted.descent) / 2f
+        // The depth curve shifts side items downward, which can push their
+        // labels past the strip; keep the glyph box inside the view so dim
+        // descenders are never cut. Center items already fit and are unaffected.
+        // (Sequence, not coerceIn: on a zero-height first draw max < min and
+        // coerceIn would throw.)
+        return baseline
+            .coerceAtMost(height - fitted.descent)
+            .coerceAtLeast(-fitted.ascent)
+    }
+
+    /** Programmatic selection (used to jump to Emoji from the comma key). */
+    fun select(index: Int) {
+        val i = index.coerceIn(0, (items.size - 1).coerceAtLeast(0))
+        snapAnimator?.cancel()
+        offset = i.toFloat()
+        if (i != selectedIndex) {
+            selectedIndex = i
+            onItemSelected?.invoke(i)
+        }
+        invalidate()
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {

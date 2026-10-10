@@ -108,15 +108,17 @@ class GboardKeyboardView @JvmOverloads constructor(
 
     // Number row sits slightly shorter than letter rows (Gboard style).
     private val NUMBER_ROW_WEIGHT = 0.92f
+    // Landscape: slimmer number row so the compacted keyboard leaves more room.
+    private val NUMBER_ROW_WEIGHT_LANDSCAPE = 0.70f
 
     // ---- Production layout spec (dp) ----
     private val SIDE_MARGIN_MIN = 4
     private val SIDE_MARGIN_DEFAULT = 6
     private val KEY_MIN = 30
     private val KEY_MAX = 55
-    private val KEY_EDGE = 2          // per-side margin -> 4dp inter-key gap
+    private val KEY_EDGE = 2          // slot gap math for keyboardSideMargin(); keys themselves paint a 2dp/side <inset>
     private val LETTER_ROW = 44
-    private val LETTER_ROW_LANDSCAPE = 42
+    private val LETTER_ROW_LANDSCAPE = 34
 
     // User keyboard-size slider: 0..100 -> 0.80x .. 1.25x (50 normal = 1.0x).
     private val SIZE_MIN = 0.80f
@@ -125,9 +127,21 @@ class GboardKeyboardView @JvmOverloads constructor(
     private fun sizeFactor(): Float =
         SIZE_MIN + Prefs.keyboardSize(context) / 100f * SIZE_SPAN
     private val CHIN = 20             // transparent safety chin for nav gestures
+    private val CHIN_LANDSCAPE = 12   // landscape: reclaim height from the chin
+
+    private fun isLandscape(): Boolean =
+        resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+
+    private fun numberRowWeight(): Float =
+        if (isLandscape()) NUMBER_ROW_WEIGHT_LANDSCAPE else NUMBER_ROW_WEIGHT
+
+    private fun chinPx(): Int = dp(if (isLandscape()) CHIN_LANDSCAPE else CHIN)
 
     // Tactile spec: 250ms long-press, tap vs 40ms hold-and-repeat for backspace.
     private val LONG_PRESS_TIMEOUT = 250L
+    /** Comma -> Emoji is a deliberate gesture: hold well past the repeat
+     *  threshold so typing a normal comma never triggers it. */
+    private val EMOJI_HOLD_TIMEOUT_MS = 600L
     private val REPEAT_INTERVAL = 40L
 
     // Triple-pitch audio: letter (high), space (mid), backspace/enter (low).
@@ -137,6 +151,8 @@ class GboardKeyboardView @JvmOverloads constructor(
 
     var isShifted = false
         private set
+    private var isShiftLocked = false
+    private var lastShiftTapAt = 0L
 
     private var isSymbols = false
     private var darkTheme = true
@@ -160,6 +176,11 @@ class GboardKeyboardView @JvmOverloads constructor(
     }
 
     var onKeyPressed: ((String) -> Unit)? = null
+
+    /** Long-press events the IME may want to act on (e.g. the comma key). */
+    var onEmojiRequested: (() -> Unit)? = null
+    private var commaKeyHint: Button? = null
+    private var emojiModeActive = false
     var onKeyLongPressed: ((String) -> Unit)? = null
 
     // ------------------------------------------------------------------
@@ -276,6 +297,8 @@ class GboardKeyboardView @JvmOverloads constructor(
         removeAllViews()
         letterKeys.clear()
         keyRows.clear()
+        shiftKey = null
+        enterKey = null
         setBackgroundColor(themeBackground())
         // Outer horizontal inset computed from the real screen width so a weight-1
         // key lands inside [KEY_MIN, KEY_MAX] dp; any slack becomes the side margin.
@@ -294,7 +317,7 @@ class GboardKeyboardView @JvmOverloads constructor(
                 layoutParams = LayoutParams(
                     LayoutParams.MATCH_PARENT,
                     0,
-                    NUMBER_ROW_WEIGHT
+                    numberRowWeight()
                 )
             }
             "1234567890".forEach { c ->
@@ -336,7 +359,7 @@ class GboardKeyboardView @JvmOverloads constructor(
         // Transparent safety chin isolates the keys from system nav gestures.
         addView(
             View(context),
-            LayoutParams(LayoutParams.MATCH_PARENT, dp(CHIN))
+            LayoutParams(LayoutParams.MATCH_PARENT, chinPx())
         )
 
         refreshKeyLabels()
@@ -349,13 +372,13 @@ class GboardKeyboardView @JvmOverloads constructor(
         val landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
 
         // Landscape layout policy: 34dp letter rows (portrait keeps LETTER_ROW).
-        // At 34dp: 34*4.92 + 20 chin = ~187dp keyboard body -> total ~255dp with
+        // At 34dp: 34*4.70 + 12 chin = ~172dp keyboard body -> total ~222dp with
         // the compacted landscape carousel/suggestion strips (layout-land xml).
-        val letterRowDp = if (landscape) 34 else LETTER_ROW
+        val letterRowDp = if (landscape) LETTER_ROW_LANDSCAPE else LETTER_ROW
         val letterRow = dp(letterRowDp) * sizeFactor()
         val withNumber = !isSymbols
-        val totalWeight = 4f + if (withNumber) NUMBER_ROW_WEIGHT else 0f
-        return (letterRow * totalWeight).toInt() + dp(CHIN)
+        val totalWeight = 4f + if (withNumber) numberRowWeight() else 0f
+        return (letterRow * totalWeight).toInt() + chinPx()
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -454,13 +477,26 @@ class GboardKeyboardView @JvmOverloads constructor(
                 label = if (isSymbols) "ABC" else "?123",
                 click = { toggleSymbols() }
             )
-            COMMA -> addActionKey(
-                row,
-                entry.weight,
-                label = ",",
-                hEnd = 8, // safety gap before the space bar
-                click = { onKeyPressed?.invoke(",") }
-            )
+            COMMA -> {
+                val commaKey = addActionKey(
+                    row,
+                    entry.weight,
+                    label = ",",
+                    hEnd = 8, // safety gap before the space bar
+                    click = { onKeyPressed?.invoke(",") },
+                    onLongPress = {
+                        // Undo the comma typed on touch-down, then hand the gesture
+                        // to the IME (opens the Emoji search pane).
+                        onKeyPressed?.invoke("⌫")
+                        onEmojiRequested?.invoke()
+                    },
+                    // Longer than the repeat threshold so ordinary typing of a comma
+                    // never opens the Emoji pane by accident.
+                    holdTimeoutMs = EMOJI_HOLD_TIMEOUT_MS
+                )
+                commaKeyHint = commaKey as? Button
+                styleCommaHint()
+            }
             DOT -> addActionKey(
                 row,
                 entry.weight,
@@ -476,7 +512,7 @@ class GboardKeyboardView @JvmOverloads constructor(
                 click = { onKeyPressed?.invoke("↵") },
                 strong = true,
                 sound = SOUND_DELETE
-            )
+            ).also { enterKey = it }.also { applyEnterActionIcon() }
 
             else -> {
                 val text = entry.label ?: return
@@ -496,9 +532,12 @@ class GboardKeyboardView @JvmOverloads constructor(
                         }
                     },
                     onPress = {
-                        val sent = if (isLetter && isShifted) text.uppercase() else text
+                        // Any letter press breaks a shift double-tap window.
+                        lastShiftTapAt = 0L
+                        val upper = isShifted || isShiftLocked
+                        val sent = if (isLetter && upper) text.uppercase() else text
                         onKeyPressed?.invoke(sent)
-                        if (isLetter && isShifted) {
+                        if (isLetter && upper && !isShiftLocked) {
                             isShifted = false
                             refreshKeyLabels()
                             styleShiftIcon()
@@ -513,6 +552,10 @@ class GboardKeyboardView @JvmOverloads constructor(
     }
 
     private var shiftKey: View? = null
+
+    private var enterKey: View? = null
+
+    private var enterAction: Int = 0
 
     private fun addKey(
         row: LinearLayout,
@@ -530,14 +573,16 @@ class GboardKeyboardView @JvmOverloads constructor(
             if (darkTheme) R.drawable.key_bg else R.drawable.key_bg_light,
             null
         )
+        keyRows[key] = row
+        // Full-cell hit area: the views tile edge-to-edge so every pixel
+        // between keys belongs to a key (no mistouch dead zones). The visible
+        // 4dp gap is painted by the background's <inset>, which keeps the
+        // slot-width math in keyboardSideMargin() honest.
         key.layoutParams = LinearLayout.LayoutParams(
             0,
             LayoutParams.MATCH_PARENT,
             weight
-        ).apply {
-            setMargins(dp(KEY_EDGE), dp(3), dp(KEY_EDGE), dp(3))
-        }
-        keyRows[key] = row
+        )
 
         val main = TextView(context).apply {
             text = label
@@ -608,30 +653,41 @@ class GboardKeyboardView @JvmOverloads constructor(
         // Commit on touch-down (like Gboard) so rapid, overlapping taps can never be
         // cancelled by touch-slop or by a second finger landing first. An additional
         // pointer is committed too, because fast two-thumb typing overlaps pointers.
+        var ownerPointerId = 0
         key.setOnTouchListener { _, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
-                    key.isPressed = true
-                    pressScaleOn(key)
-                    playSound(SOUND_LETTER)
-                    onPress()
-                    showPopup(popup, main.text, key)
                     if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                        ownerPointerId = event.getPointerId(0)
                         longPressFired = false
                         cancelKeyRunnable(key, longPressRunnable)
                         postKeyDelayed(key, longPressRunnable, LONG_PRESS_TIMEOUT)
                     }
+                    // Commit FIRST: the character must never wait behind
+                    // sound, animation, or popup work (fast-typing latency).
+                    onPress()
+                    key.isPressed = true
+                    pressScaleOn(key)
+                    playSound(SOUND_LETTER)
+                    showPopup(popup, main.text, key)
                     true
                 }
 
                 MotionEvent.ACTION_MOVE -> {
-                    val rect = Rect()
-                    key.getGlobalVisibleRect(rect)
-                    val inside = rect.contains(event.rawX.toInt(), event.rawY.toInt())
-                    key.isPressed = inside
-                    if (!inside) {
-                        cancelKeyRunnable(key, longPressRunnable)
-                        hidePopup(popup, key)
+                    // Track THIS key's own pointer in view-local coordinates:
+                    // rawX/rawY follow pointer 0 and lie about position the
+                    // moment a second finger lands (fast two-thumb typing).
+                    val idx = event.findPointerIndex(ownerPointerId)
+                    if (idx >= 0) {
+                        val x = event.getX(idx)
+                        val y = event.getY(idx)
+                        val inside =
+                            x >= 0f && y >= 0f && x < key.width && y < key.height
+                        key.isPressed = inside
+                        if (!inside) {
+                            cancelKeyRunnable(key, longPressRunnable)
+                            hidePopup(popup, key)
+                        }
                     }
                     true
                 }
@@ -693,12 +749,14 @@ class GboardKeyboardView @JvmOverloads constructor(
         iconRes: Int? = null,
         tint: Int? = null,
         click: () -> Unit,
+        onLongPress: (() -> Unit)? = null,
         repeat: Boolean = false,
+        holdTimeoutMs: Long = LONG_PRESS_TIMEOUT,
         strong: Boolean = false,
         sound: Int = SOUND_LETTER,
-        hStart: Int = 2,
-        hEnd: Int = 2
-    ) {
+        hStart: Int = 0,
+        hEnd: Int = 0
+    ): View {
         val key: View = if (iconRes != null) {
             val container = FrameLayout(context)
             container.background = resources.getDrawable(
@@ -726,7 +784,7 @@ class GboardKeyboardView @JvmOverloads constructor(
             LayoutParams.MATCH_PARENT,
             weight
         ).apply {
-            setMargins(dp(hStart), dp(3), dp(hEnd), dp(3))
+            setMargins(dp(hStart), 0, dp(hEnd), 0)
         }
         keyRows[key] = row
 
@@ -749,7 +807,9 @@ class GboardKeyboardView @JvmOverloads constructor(
 
         val longPressRunnable = Runnable {
             longPressFired = true
-            if (repeat) {
+            if (onLongPress != null) {
+                onLongPress()
+            } else if (repeat) {
                 click()
                 postKeyDelayed(key, repeatRunnable, REPEAT_INTERVAL)
             }
@@ -757,17 +817,22 @@ class GboardKeyboardView @JvmOverloads constructor(
 
         // Action keys also commit on touch-down for instant response. Backspace does
         // a first delete on down, then starts repeating once the long-press fires.
+        var ownerPointerId = 0
         key.setOnTouchListener { _, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
+                    if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                        ownerPointerId = event.getPointerId(0)
+                        longPressFired = false
+                        if ((repeat || onLongPress != null) && event.pointerCount == 1) {
+                            postKeyDelayed(key, longPressRunnable, holdTimeoutMs)
+                        }
+                    }
+                    // Commit FIRST so feedback work can't delay the action.
+                    click()
                     key.isPressed = true
                     pressScaleOn(key)
                     playSound(sound)
-                    longPressFired = false
-                    click()
-                    if (repeat && event.actionMasked == MotionEvent.ACTION_DOWN) {
-                        postKeyDelayed(key, longPressRunnable, LONG_PRESS_TIMEOUT)
-                    }
                     true
                 }
 
@@ -775,12 +840,16 @@ class GboardKeyboardView @JvmOverloads constructor(
                     if (longPressFired) {
                         true
                     } else {
-                        val rect = Rect()
-                        key.getGlobalVisibleRect(rect)
-                        val inside = rect.contains(event.rawX.toInt(), event.rawY.toInt())
-                        key.isPressed = inside
-                        if (!inside) {
-                            cancelKeyRunnable(key, longPressRunnable)
+                        val idx = event.findPointerIndex(ownerPointerId)
+                        if (idx >= 0) {
+                            val x = event.getX(idx)
+                            val y = event.getY(idx)
+                            val inside =
+                                x >= 0f && y >= 0f && x < key.width && y < key.height
+                            key.isPressed = inside
+                            if (!inside) {
+                                cancelKeyRunnable(key, longPressRunnable)
+                            }
                         }
                         true
                     }
@@ -800,6 +869,7 @@ class GboardKeyboardView @JvmOverloads constructor(
         }
 
         row.addView(key)
+        return key
     }
 
     private fun addSpaceKey(row: LinearLayout, weight: Float) {
@@ -813,7 +883,7 @@ class GboardKeyboardView @JvmOverloads constructor(
             LayoutParams.MATCH_PARENT,
             weight
         ).apply {
-            setMargins(dp(2), dp(3), dp(2), dp(3))
+            setMargins(0, 0, 0, 0)
         }
         keyRows[key] = row
 
@@ -821,6 +891,7 @@ class GboardKeyboardView @JvmOverloads constructor(
         // normal tap inserts " " on ACTION_UP, while a 250ms hold instead opens the
         // language switcher and inserts nothing.
         var longPressFired = false
+        var ownerPointerId = 0
 
         val toggleKeyboardRunnable = Runnable {
             longPressFired = true
@@ -831,6 +902,7 @@ class GboardKeyboardView @JvmOverloads constructor(
         key.setOnTouchListener { _, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    ownerPointerId = event.getPointerId(0)
                     key.isPressed = true
                     pressScaleOn(key)
                     playSound(SOUND_SPACE)
@@ -845,12 +917,16 @@ class GboardKeyboardView @JvmOverloads constructor(
                 }
 
                 MotionEvent.ACTION_MOVE -> {
-                    val rect = Rect()
-                    key.getGlobalVisibleRect(rect)
-                    val inside = rect.contains(event.rawX.toInt(), event.rawY.toInt())
-                    key.isPressed = inside
-                    if (!inside) {
-                        cancelKeyRunnable(key, toggleKeyboardRunnable)
+                    val idx = event.findPointerIndex(ownerPointerId)
+                    if (idx >= 0) {
+                        val x = event.getX(idx)
+                        val y = event.getY(idx)
+                        val inside =
+                            x >= 0f && y >= 0f && x < key.width && y < key.height
+                        key.isPressed = inside
+                        if (!inside) {
+                            cancelKeyRunnable(key, toggleKeyboardRunnable)
+                        }
                     }
                     true
                 }
@@ -924,14 +1000,38 @@ class GboardKeyboardView @JvmOverloads constructor(
         shiftKey?.let { key ->
             applyIcon(
                 key,
-                R.drawable.ic_shift,
-                if (isShifted) accentColor() else iconColor()
+                if (isShiftLocked) R.drawable.ic_shift_locked else R.drawable.ic_shift,
+                if (isShifted || isShiftLocked) accentColor() else iconColor()
             )
         }
     }
 
+    /**
+     * Reflects the target editor's IME action on the Enter key:
+     * SEARCH -> magnifier, GO/NEXT/SEND -> right arrow, everything else (incl.
+     * DONE and multiline) keeps the plain return arrow. Only the icon changes;
+     * the "↵" event pipeline is untouched (RomanNepaliIME decides behavior).
+     */
+    fun setEnterAction(action: Int) {
+        enterAction = action
+        applyEnterActionIcon()
+    }
+
+    private fun applyEnterActionIcon() {
+        val iconRes = when (enterAction and android.view.inputmethod.EditorInfo.IME_MASK_ACTION) {
+            android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH -> R.drawable.ic_search
+            android.view.inputmethod.EditorInfo.IME_ACTION_GO -> R.drawable.ic_go
+            android.view.inputmethod.EditorInfo.IME_ACTION_NEXT -> R.drawable.ic_go
+            android.view.inputmethod.EditorInfo.IME_ACTION_SEND -> R.drawable.ic_go
+            else -> R.drawable.ic_enter
+        }
+        enterKey?.let { key ->
+            applyIcon(key, iconRes, accentColor())
+        }
+    }
+
     private fun labelFor(entry: String): String {
-        return if (isShifted && entry.length == 1 && entry[0] in 'a'..'z') {
+        return if ((isShifted || isShiftLocked) && entry.length == 1 && entry[0] in 'a'..'z') {
             entry.uppercase()
         } else {
             entry
@@ -946,8 +1046,25 @@ class GboardKeyboardView @JvmOverloads constructor(
     }
 
     private fun toggleShift() {
-        isShifted = !isShifted
+        val now = android.os.SystemClock.uptimeMillis()
+        val isDoubleTap =
+            now - lastShiftTapAt <= android.view.ViewConfiguration.getDoubleTapTimeout()
+        lastShiftTapAt = now
+        when {
+            // Tapping while locked releases it (back to plain lowercase).
+            isShiftLocked -> {
+                isShiftLocked = false
+                isShifted = false
+            }
+            // Second quick tap: caps lock, stays on across letters/symbols.
+            isDoubleTap -> {
+                isShiftLocked = true
+                isShifted = true
+            }
+            else -> isShifted = !isShifted
+        }
         refreshKeyLabels()
+        styleShiftIcon()
         onShiftToggled?.invoke(isShifted)
     }
 
@@ -996,6 +1113,23 @@ class GboardKeyboardView @JvmOverloads constructor(
 
     private fun iconColor(): Int =
         if (darkTheme) themedColor(R.color.icon_dark) else themedColor(R.color.icon_light)
+
+    /** Marks the comma key as the Emoji entry point (hold to open) and makes the
+     *  marker fully opaque while the Emoji pane is the active mode. Kept in the
+     *  letter colour so it reads as part of the key, not as a red badge. */
+    fun setEmojiMode(active: Boolean) {
+        emojiModeActive = active
+        styleCommaHint()
+    }
+
+    private fun styleCommaHint() {
+        val hint = commaKeyHint ?: return
+        val icon = resources.getDrawable(R.drawable.ic_emoji_hint, null)
+        icon?.setTint(letterTextColor())
+        icon?.alpha = if (emojiModeActive) 255 else 150
+        hint.setCompoundDrawablesWithIntrinsicBounds(null, null, null, icon)
+        hint.compoundDrawablePadding = dp(2)
+    }
 
     private fun accentColor(): Int = themedColor(R.color.accent)
 

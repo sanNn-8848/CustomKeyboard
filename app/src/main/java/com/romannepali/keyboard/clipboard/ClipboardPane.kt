@@ -5,8 +5,8 @@ import android.content.res.ColorStateList
 import android.util.AttributeSet
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.View
 import android.view.animation.OvershootInterpolator
-import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageButton
 import android.widget.LinearLayout
@@ -15,11 +15,22 @@ import com.romannepali.keyboard.R
 
 enum class ClipAction { SELECT_ALL, CUT, COPY, PASTE }
 
+/** One tappable editing action rendered at the front of the clipboard strip. */
+data class ActionItem(
+    val id: Int,
+    val iconRes: Int,
+    val label: String,
+    val enabled: Boolean
+)
+
 /**
- * Slim horizontal pane that shows the most recent clipboard clips.
- * Tap a clip → its text is pasted into the editor. Tap the ✕ → the clip is removed.
- * The "Actions" button opens a floating glass panel (above the keyboard) with the
- * four editing actions as static, directly-tappable buttons.
+ * Slim horizontal strip showing the most recent clipboard clips, preceded by the
+ * four editing actions (Select all / Copy / Paste / Cut).
+ *
+ * Tap a clip → its text is pasted into the editor. Tap the trash icon → the clip
+ * is removed. Tap an action icon → the action runs against the focused editor.
+ * Actions are dimmed (and inert) when they don't apply, e.g. Copy with no
+ * selection.
  */
 class ClipboardPane @JvmOverloads constructor(
     context: Context,
@@ -51,67 +62,55 @@ class ClipboardPane @JvmOverloads constructor(
     // refresh is what made the strip flicker / stutter while scrolling.
     private var lastHistorySignature: String? = null
     private var lastHasSelection = false
+    private var lastDark = true
 
-    private var actionPanel: GlassActionPanel? = null
-    private var panelOpen = false
+    // Action chips by ClipAction.ordinal, so enabled state can be refreshed
+    // in place when the selection changes without rebuilding the strip.
+    private val actionChips = LinkedHashMap<Int, LinearLayout>()
 
-    /** @param onAction editing toolbar: select all / cut / copy / paste.
-     *  @param onPaste called with the clip text when the user taps a chip.
-     *  @param hasSelection whether the editor currently has highlighted text
-     *  (disables Copy / Cut while nothing is selected). */
+    /** @param onPaste called with the clip text when the user taps a chip.
+     *  @param hasSelection whether the editor currently has highlighted text.
+     *  @param onAction called with the editing action when an action chip is tapped. */
     fun bind(
         manager: ClipboardManager,
         dark: Boolean,
         hasSelection: Boolean,
-        onAction: (ClipAction) -> Unit,
         onPaste: (String) -> Unit,
-        onDelete: (String) -> Unit
+        onDelete: (String) -> Unit,
+        onAction: (ClipAction) -> Unit
     ) {
         val items = manager.getHistory().take(20)
         val signature = items.joinToString("\u0000") { it.text }
-        if (signature == lastHistorySignature) {
-            // Keep the open action panel in sync with the selection state.
+        if (signature == lastHistorySignature && dark == lastDark) {
+            // Nothing structural changed — just keep the action enabled states
+            // in sync with the current selection.
             if (lastHasSelection != hasSelection) {
                 lastHasSelection = hasSelection
-                actionPanel?.refreshEnabled(actionItems(hasSelection))
+                updateActionEnabled(hasSelection)
             }
             return
         }
         lastHistorySignature = signature
         lastHasSelection = hasSelection
-        closeActionPanel()
+        lastDark = dark
 
         val textRes = if (dark) R.color.letter_text_dark else R.color.letter_text_light
         val chipBg = if (dark) R.drawable.bg_suggestion_chip_dark else R.drawable.bg_suggestion_chip_light
         val tint = resources.getColor(if (dark) R.color.icon_dark else R.color.icon_light, null)
 
         container.removeAllViews()
+        actionChips.clear()
 
-        // One "Actions" button instead of four scattered chips: tapping it flips
-        // the floating glass panel with Select All / Copy / Paste / Cut.
-        container.addView(
-            TextView(context).apply {
-                text = "Actions"
-                background = resources.getDrawable(chipBg, null)
-                setTextColor(resources.getColor(textRes, null))
-                setCompoundDrawablesWithIntrinsicBounds(
-                    resources.getDrawable(R.drawable.ic_actions, null), null, null, null
-                )
-                compoundDrawablePadding = dp(4)
-                getCompoundDrawables()?.firstOrNull()?.setTint(tint)
-                textSize = 13f
-                gravity = Gravity.CENTER
-                isSingleLine = true
-                setPadding(dp(10), dp(6), dp(10), dp(6))
-                setOnClickListener {
-                    if (panelOpen) closeActionPanel() else openActionPanel(dark, hasSelection, onAction)
-                }
-            },
-            LinearLayout.LayoutParams(
+        // --- editing actions, always present, dimmed when unavailable ---
+        actionItems(hasSelection).forEach { item ->
+            val chip = actionChip(item, chipBg, textRes, tint, onAction)
+            actionChips[item.id] = chip
+            container.addView(chip, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 dp(32)
-            ).apply { marginStart = dp(2); marginEnd = dp(4) }
-        )
+            ).apply { marginStart = dp(2); marginEnd = dp(2) })
+        }
+        container.addView(divider(tint))
 
         if (items.isEmpty()) {
             container.addView(emptyLabel)
@@ -173,7 +172,7 @@ class ClipboardPane @JvmOverloads constructor(
     }
 
     // ------------------------------------------------------------------
-    // Floating glass action panel
+    // Editing actions
     // ------------------------------------------------------------------
 
     private fun actionItems(hasSelection: Boolean): List<ActionItem> {
@@ -199,69 +198,69 @@ class ClipboardPane @JvmOverloads constructor(
         )
     }
 
-    /** Anchors the glass panel just above the keyboard, centered. */
-    private fun openActionPanel(
-        dark: Boolean,
-        hasSelection: Boolean,
+    private fun actionChip(
+        item: ActionItem,
+        chipBg: Int,
+        textRes: Int,
+        tint: Int,
         onAction: (ClipAction) -> Unit
-    ) {
-        val root = rootView as? FrameLayout ?: return
-        closeActionPanel()
-
-        val panel = GlassActionPanel(context)
-        panel.setTheme(dark)
-        panel.bind(actionItems(hasSelection)) { id ->
-            closeActionPanel()
-            onAction(ClipAction.values()[id])
+    ): LinearLayout {
+        val dimTint = (tint and 0x00FFFFFF) or (0x66 shl 24)
+        val chip = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = resources.getDrawable(chipBg, null)
+            setPadding(dp(8), 0, dp(8), 0)
+            isEnabled = item.enabled
+            isClickable = item.enabled
+            alpha = if (item.enabled) 1f else 0.4f
+            // Listener is always attached; isEnabled/isClickable gate the tap so
+            // the state can be toggled later without reattaching.
+            setOnClickListener { onAction(ClipAction.values()[item.id]) }
         }
+        val icon = ImageButton(context).apply {
+            background = null
+            setImageResource(item.iconRes)
+            imageTintList = ColorStateList.valueOf(if (item.enabled) tint else dimTint)
+            contentDescription = item.label
+            setPadding(0, 0, 0, 0)
+        }
+        chip.addView(icon, LinearLayout.LayoutParams(dp(18), dp(18)))
+        chip.addView(TextView(context).apply {
+            text = item.label
+            textSize = 12f
+            isSingleLine = true
+            gravity = Gravity.CENTER
+            setTextColor(resources.getColor(textRes, null))
+        }, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { marginStart = dp(5) })
+        return chip
+    }
 
-        val w = panel.menuWidthPx()
-        val h = panel.menuHeightPx()
-        val left = ((root.width - w) / 2).coerceAtLeast(0)
-        val top = dp(4)
-
-        panel.pivotX = (w / 2).toFloat()
-        panel.pivotY = 0f
-        root.addView(
-            panel,
-            FrameLayout.LayoutParams(w, h).apply {
-                gravity = Gravity.TOP or Gravity.START
-                leftMargin = left
-                topMargin = top
-            }
+    /** Flips action chips between enabled/disabled in place (selection changed). */
+    private fun updateActionEnabled(hasSelection: Boolean) {
+        val tint = resources.getColor(
+            if (lastDark) R.color.icon_dark else R.color.icon_light, null
         )
-
-        panel.alpha = 0f
-        panel.scaleX = 0.92f
-        panel.scaleY = 0.92f
-        panel.translationY = dp(6).toFloat()
-        panel.animate()
-            .alpha(1f)
-            .scaleX(1f)
-            .scaleY(1f)
-            .translationY(0f)
-            .setDuration(160)
-            .setInterpolator(OvershootInterpolator(1.05f))
-            .start()
-
-        actionPanel = panel
-        panelOpen = true
-    }
-
-    private fun closeActionPanel() {
-        val panel = actionPanel
-        if (panel == null) {
-            panelOpen = false
-            return
+        val dimTint = (tint and 0x00FFFFFF) or (0x66 shl 24)
+        actionItems(hasSelection).forEach { item ->
+            val chip = actionChips[item.id] ?: return@forEach
+            chip.isEnabled = item.enabled
+            chip.isClickable = item.enabled
+            chip.alpha = if (item.enabled) 1f else 0.4f
+            (chip.getChildAt(0) as? ImageButton)?.imageTintList =
+                ColorStateList.valueOf(if (item.enabled) tint else dimTint)
         }
-        panelOpen = false
-        actionPanel = null
-        panel.dismiss()
     }
 
-    override fun onDetachedFromWindow() {
-        closeActionPanel()
-        super.onDetachedFromWindow()
+    private fun divider(tint: Int): View = View(context).apply {
+        setBackgroundColor((tint and 0x00FFFFFF) or (0x33 shl 24))
+        layoutParams = LinearLayout.LayoutParams(dp(1), dp(22)).apply {
+            marginStart = dp(4)
+            marginEnd = dp(6)
+        }
     }
 
     private fun dp(v: Int): Int = TypedValue.applyDimension(

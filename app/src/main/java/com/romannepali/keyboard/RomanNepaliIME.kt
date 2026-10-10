@@ -15,7 +15,7 @@ import com.romannepali.keyboard.clipboard.ClipAction
 import com.romannepali.keyboard.clipboard.ClipboardManager
 import com.romannepali.keyboard.clipboard.ClipboardPane
 import com.romannepali.keyboard.editing.TextEditor
-import com.romannepali.keyboard.emoji.EmojiPane
+import com.romannepali.keyboard.emoji.EmojiSearchPane
 import com.romannepali.keyboard.suggestion.AUTO_CORRECT_THRESHOLD
 import com.romannepali.keyboard.suggestion.PredictionContext
 import com.romannepali.keyboard.suggestion.SuggestionEngine
@@ -30,11 +30,12 @@ class RomanNepaliIME : InputMethodService() {
     private var featureCarousel: FeatureCarouselView? = null
     private var featurePane: android.widget.FrameLayout? = null
     private var clipboardPane: ClipboardPane? = null
-    private var emojiPane: EmojiPane? = null
+    private var emojiSearchPane: EmojiSearchPane? = null
     private var mainView: View? = null
 
     private lateinit var suggestionEngine: SuggestionEngine
     private lateinit var clipboardManager: ClipboardManager
+    private var clipListener: android.content.ClipboardManager.OnPrimaryClipChangedListener? = null
     private val textEditor = TextEditor()
     private val currentWord = StringBuilder()
 
@@ -62,6 +63,22 @@ class RomanNepaliIME : InputMethodService() {
         suggestionEngine = SuggestionEngine(this)
         clipboardManager = ClipboardManager.get(this)
 
+        // Watch the system clipboard so ANY copy/cut (this keyboard's or any
+        // other app's) reaches the pane's history. Without this listener the
+        // store had no writer at all after the Actions panel was removed.
+        clipListener = android.content.ClipboardManager.OnPrimaryClipChangedListener {
+            // ClipboardManager can fire this off the main thread; hop over so
+            // the store write + pane re-render stay ordered on the UI thread.
+            mainHandler.post {
+                saveEditedClip {
+                    if (currentMode == 1) refreshClipboardPane()
+                }
+            }
+        }
+        (getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+            as? android.content.ClipboardManager)
+            ?.addPrimaryClipChangedListener(clipListener)
+
         updateFullscreenMode()
     }
 
@@ -72,15 +89,22 @@ class RomanNepaliIME : InputMethodService() {
      * times; [knownText] (the selection read before a Cut) is stored immediately
      * as a fallback that never depends on host timing.
      */
-    private fun saveEditedClip(knownText: String? = null, attempt: Int = 0) {
+    private fun saveEditedClip(
+        knownText: String? = null,
+        attempt: Int = 0,
+        onDone: (() -> Unit)? = null
+    ) {
         if (!knownText.isNullOrBlank() && attempt == 0) {
             clipboardManager.copy(knownText)
         }
         val systemText = readPrimaryClipText()
         if (!systemText.isNullOrBlank()) {
             clipboardManager.copy(systemText)
+            onDone?.invoke()
         } else if (attempt < 5) {
-            mainHandler.postDelayed({ saveEditedClip(null, attempt + 1) }, 100L)
+            mainHandler.postDelayed({ saveEditedClip(null, attempt + 1, onDone) }, 100L)
+        } else {
+            onDone?.invoke()
         }
     }
 
@@ -133,29 +157,42 @@ class RomanNepaliIME : InputMethodService() {
         }
         root?.addView(dragOverlay)
 
-        // Build clipboard + emoji panes programmatically so they share the same parent.
-        clipboardPane = ClipboardPane(this).apply { visibility = View.GONE }
-        emojiPane = EmojiPane(this).apply { visibility = View.GONE }
+        // Build the two feature panes programmatically so they share the same parent.
+        clipboardPane = ClipboardPane(this).apply {
+            visibility = View.GONE
+            layoutParams = android.widget.LinearLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        }
+        emojiSearchPane = EmojiSearchPane(this).apply {
+            visibility = View.GONE
+            layoutParams = android.widget.LinearLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        }
         featurePane?.addView(clipboardPane)
-        featurePane?.addView(emojiPane)
+        featurePane?.addView(emojiSearchPane)
 
         featureCarousel?.items = listOf(
             FeatureItem("Suggestions", "\uD83D\uDCAC"),
             FeatureItem("Clipboard", "\uD83D\uDCCB"),
             FeatureItem("Emoji", "\uD83D\uDE00")
         )
-        featureCarousel?.onItemSelected = { index ->
-            currentMode = index
-            suggestionBar?.visibility = if (index == 0) View.VISIBLE else View.GONE
-            clipboardPane?.visibility = if (index == 1) View.VISIBLE else View.GONE
-            emojiPane?.visibility = if (index == 2) View.VISIBLE else View.GONE
-            when (index) {
-                1 -> refreshClipboardPane()
-                2 -> refreshEmojiPane()
-            }
-        }
-
         applyKeyboardTheme()
+
+        // Long-pressing the comma key opens the Emoji search pane.
+        keyboardView?.onEmojiRequested = { openEmojiSearch() }
+
+        // Restore the last mode (matters after rotation, e.g. emoji pane open).
+        showFeatureMode(currentMode)
+        // Sync the carousel highlight to the restored mode too. The listener
+        // attaches after this line so select() can't rebuild the pane above.
+        featureCarousel?.select(currentMode)
+        featureCarousel?.onItemSelected = { index ->
+            showFeatureMode(index)
+        }
 
         // Keep the keyboard above system navigation/gesture bars in all orientations.
         ViewCompat.setOnApplyWindowInsetsListener(view) { v, insets ->
@@ -215,7 +252,11 @@ class RomanNepaliIME : InputMethodService() {
         keyboardView?.onKeyPressed = { text ->
             val ic = currentInputConnection
 
-            if (ic != null) {
+            // While the emoji search field is the active target, free-text keys
+            // drive the search filter instead of the app's text field.
+            if (emojiSearchPane?.isSearchTarget() == true) {
+                emojiSearchPane?.consumeKey(text)
+            } else if (ic != null) {
                 when (text) {
                     " " -> handleSpace(ic)
 
@@ -331,17 +372,17 @@ class RomanNepaliIME : InputMethodService() {
             }
         }
 
-        // Long-press space opens the system keyboard switcher (like Gboard).
-        keyboardView?.onKeyLongPressed = { text ->
-            if (text == " ") {
-                val imm = getSystemService(INPUT_METHOD_SERVICE)
-                        as android.view.inputmethod.InputMethodManager
-                imm.showInputMethodPicker()
-            }
+    // Long-press space opens the system keyboard switcher (like Gboard).
+    keyboardView?.onKeyLongPressed = { text ->
+        if (text == " ") {
+            val imm = getSystemService(INPUT_METHOD_SERVICE)
+                as android.view.inputmethod.InputMethodManager
+            imm.showInputMethodPicker()
         }
-
-        return view
     }
+
+    return view
+}
 
     /** FrostGlass backdrop: gradient glass + static coral glow + mountain silhouette. */
     private fun applyKeyboardTheme() {
@@ -483,31 +524,6 @@ class RomanNepaliIME : InputMethodService() {
             clipboardManager,
             dark,
             hasSelection,
-            onAction = { action ->
-                val ic = currentInputConnection ?: return@bind
-                when (action) {
-                    ClipAction.SELECT_ALL -> textEditor.selectAll(ic)
-                    ClipAction.CUT -> {
-                        // Read the selection before cutting: many editors publish
-                        // the primary clip asynchronously, but our fallback works
-                        // even if a slow app never surfaces it in time.
-                        val selected = ic.getSelectedText(0)
-                            ?.toString()?.takeIf { it.isNotBlank() }
-                        textEditor.cut(ic)
-                        saveEditedClip(selected)
-                    }
-                    ClipAction.COPY -> {
-                        textEditor.copy(ic)
-                        saveEditedClip()
-                    }
-                    ClipAction.PASTE -> textEditor.paste(ic)
-                }
-                // Let the app perform the action (and set the system clip)
-                // before we re-read it into history. Refreshed twice so the
-                // freshly copied cut text is visible even on slow editors.
-                mainHandler.postDelayed({ refreshClipboardPane() }, 200)
-                mainHandler.postDelayed({ refreshClipboardPane() }, 500)
-            },
             onPaste = { text ->
                 if (currentWord.isNotEmpty()) finishCurrentWord()
                 currentInputConnection?.commitText(text, 1)
@@ -516,16 +532,95 @@ class RomanNepaliIME : InputMethodService() {
             onDelete = { text ->
                 clipboardManager.removeByText(text)
                 refreshClipboardPane()
+            },
+            onAction = { action ->
+                currentInputConnection?.let { ic ->
+                    // Same contract as paste: close the in-progress word first so
+                    // the buffer can't drift across an editor-side edit.
+                    if (currentWord.isNotEmpty()) finishCurrentWord()
+                    when (action) {
+                        ClipAction.SELECT_ALL -> textEditor.selectAll(ic)
+                        ClipAction.COPY -> textEditor.copy(ic)
+                        ClipAction.CUT -> textEditor.cut(ic)
+                        ClipAction.PASTE -> textEditor.paste(ic)
+                    }
+                    suggestionBar?.clearSuggestions()
+                    // The selection state settles asynchronously after the action,
+                    // so re-read it and refresh the action chips' enabled states.
+                    mainHandler.postDelayed({ refreshClipboardPane() }, 120)
+                }
             }
         )
     }
 
-    private fun refreshEmojiPane() {
-        val dark = Prefs.darkTheme(this)
-        emojiPane?.bind(dark) { emoji ->
+    private fun refreshEmojiSearchPane() {
+        emojiSearchPane?.open { emoji ->
+            // Same contract as paste: close the in-progress word first so the
+            // buffer can't drift across the inserted emoji and learn junk.
+            if (currentWord.isNotEmpty()) finishCurrentWord()
             currentInputConnection?.commitText(emoji, 1)
+            suggestionBar?.clearSuggestions()
         }
     }
+
+    /**
+     * Activates one of the three feature modes (0=suggestions, 1=clipboard,
+     * 2=emoji) and sizes the pane so emoji gets room to search & browse.
+     */
+    private fun showFeatureMode(index: Int) {
+        currentMode = index
+        suggestionBar?.visibility = if (index == 0) View.VISIBLE else View.GONE
+        clipboardPane?.visibility = if (index == 1) View.VISIBLE else View.GONE
+        emojiSearchPane?.visibility = if (index == 2) View.VISIBLE else View.GONE
+        keyboardView?.setEmojiMode(index == 2)
+        when (index) {
+            1 -> {
+                // Opening the pane makes the IME the focused clipboard reader:
+                // pull whatever is on the system clipboard now, then re-render
+                // once the (async) read settles. The change listener covers
+                // copies made while we were already alive.
+                saveEditedClip { refreshClipboardPane() }
+                refreshClipboardPane()
+            }
+
+            2 -> refreshEmojiSearchPane()
+        }
+        applyFeaturePaneHeight()
+    }
+
+    private fun applyFeaturePaneHeight() {
+        val landscape =
+            resources.configuration.orientation ==
+                android.content.res.Configuration.ORIENTATION_LANDSCAPE
+        val target = when {
+            currentMode == 2 -> if (landscape) dp(120) else dp(150)
+            else -> if (landscape) dp(26) else dp(42)
+        }
+        featurePane?.layoutParams = (featurePane?.layoutParams ?: return).apply {
+            height = target
+        }
+    }
+
+    /** Comma-key long press: open (or refocus) the Emoji search pane. */
+    private fun openEmojiSearch() {
+        if (currentMode != 2) {
+            featureCarousel?.select(2)
+            return
+        }
+        // Already typing in the search line: the view sent "⌫" first and
+        // consumeKey() already removed the comma touch-down typed there.
+        // Re-running open() would wipe the query the user searched for.
+        if (emojiSearchPane?.isSearchTarget() == true) return
+        emojiSearchPane?.open { emoji ->
+            if (currentWord.isNotEmpty()) finishCurrentWord()
+            currentInputConnection?.commitText(emoji, 1)
+            suggestionBar?.clearSuggestions()
+        }
+        emojiSearchPane?.deactivateSearch()
+    }
+
+    private fun dp(value: Int): Int =
+        (value * resources.displayMetrics.density + 0.5f).toInt()
 
     private fun updateSuggestions() {
         if (!Prefs.suggestions(this)) {
@@ -623,7 +718,9 @@ class RomanNepaliIME : InputMethodService() {
             }
         }
 
-        ic.commitText(out, 1)
+        // Commit the word then a space, so the next word starts clean and the
+        // keyboard behaves like the platform picker the user knows.
+        ic.commitText(out + " ", 1)
 
         val words = suggestion.split(Regex("\\s+")).filter { it.isNotBlank() }
         words.forEach { word ->
@@ -743,10 +840,27 @@ class RomanNepaliIME : InputMethodService() {
         keyboardView?.applyThemeIfChanged()
         applyKeyboardTheme()
 
+        // Reflect the target editor's IME action (Search/Go/Next/Send) on the
+        // Enter key. Re-applied on every input start, including rotation.
+        keyboardView?.setEnterAction(attribute?.imeOptions ?: 0)
+
         // Re-render suggestions for whatever word survives in the editor. On
         // rotation this brings back the suggestions bar for "mero nam"; in a
         // genuinely new (empty) field it clears to nothing via the same path.
         updateSuggestions()
+    }
+
+    /**
+     * Runs after the input view is (re)built and attached — the guaranteed
+     * moment the Enter key exists. onStartInput alone can fire before
+     * onCreateInputView on the first show, leaving the icon unapplied.
+     */
+    override fun onStartInputView(
+        editorInfo: android.view.inputmethod.EditorInfo?,
+        restarting: Boolean
+    ) {
+        super.onStartInputView(editorInfo, restarting)
+        keyboardView?.setEnterAction(editorInfo?.imeOptions ?: 0)
     }
 
     override fun onUpdateSelection(
@@ -816,11 +930,16 @@ class RomanNepaliIME : InputMethodService() {
     }
 
     override fun onDestroy() {
+        (getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+            as? android.content.ClipboardManager)
+            ?.removePrimaryClipChangedListener(clipListener)
+        clipListener = null
         suggestionJob++
         suggestionExecutor.shutdownNow()
         keyboardView?.onKeyPressed = null
         keyboardView = null
         suggestionBar = null
+        emojiSearchPane = null
 
         super.onDestroy()
     }

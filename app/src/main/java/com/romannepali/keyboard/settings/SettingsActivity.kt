@@ -43,6 +43,11 @@ class SettingsActivity : AppCompatActivity() {
         setupAbout()
     }
 
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+    }
+
     private fun setupKeyboardButton() {
         val button = findViewById<MaterialButton>(R.id.btn_setup_keyboard)
         if (isKeyboardEnabled()) {

@@ -56,5 +56,8 @@ node_modules/
 *.swp
 *~
 
+# Kotlin incremental compile state
+.kotlin/
+
 # Training corpus (large)
 data/

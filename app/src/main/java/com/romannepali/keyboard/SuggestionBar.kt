@@ -273,7 +273,8 @@ class SuggestionBar @JvmOverloads constructor(
                     gravity = Gravity.CENTER
                     isSingleLine = true
                     ellipsize = android.text.TextUtils.TruncateAt.END
-                    setPadding(dp(12), dp(6), dp(12), dp(6))
+                    setIncludeFontPadding(false)
+                    setPadding(dp(12), dp(4), dp(12), dp(4))
                     background = resources.getDrawable(
                         if (index == 0) R.drawable.bg_suggestion_chip_dark_selected else R.drawable.bg_suggestion_chip_dark,
                         null
@@ -281,7 +282,7 @@ class SuggestionBar @JvmOverloads constructor(
                     typeface = if (index == 0) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
                     val lp = LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.WRAP_CONTENT,
-                        dp(36)
+                        LinearLayout.LayoutParams.MATCH_PARENT
                     ).apply {
                         marginStart = dp(2)
                         marginEnd = dp(2)
