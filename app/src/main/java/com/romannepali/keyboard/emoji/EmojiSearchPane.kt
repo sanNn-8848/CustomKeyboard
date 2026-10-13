@@ -119,7 +119,6 @@ class EmojiSearchPane @JvmOverloads constructor(
                 background = resources.getDrawable(R.drawable.bg_suggestion_chip_dark, null)
                 setOnClickListener {
                     activeGroup = group.second
-                    query = expandedQuery
                     searchInput.setText("")
                     rebuildGrid()
                     hightlightChips()
@@ -176,7 +175,7 @@ class EmojiSearchPane @JvmOverloads constructor(
     }
 
     private fun rebuildGrid() {
-        val q = query.toLowerCase().trim()
+        val q = query.lowercase().trim()
         val matched = data.filter { emoji ->
             val inGroup = activeGroup == ALL_GROUP || emoji.group == activeGroup
             if (!inGroup) return@filter false
@@ -318,3 +317,4 @@ class EmojiSearchPane @JvmOverloads constructor(
         )
     }
 }
+

@@ -60,4 +60,42 @@
     <string name="undo_content_description">Undo delete</string>
     <string name="delete_suggestion">Remove</string>
     <string name="space_label">Roman Nepali</string>
+
+    <!-- Toolbar -->
+    <string name="tools_toggle_description">Toggle keyboard tools</string>
+
+    <!-- Settings v2 -->
+    <string name="section_appearance">Appearance</string>
+    <string name="section_typing">Typing</string>
+    <string name="section_feedback">Feedback</string>
+    <string name="accent_color">Accent colour</string>
+    <string name="one_hand_mode">One-handed mode</string>
+    <string name="one_hand_off">Off</string>
+    <string name="one_hand_left">Left</string>
+    <string name="one_hand_right">Right</string>
+    <string name="auto_correct">Auto-correct</string>
+    <string name="auto_correct_hint">Fix likely typos when you press space.</string>
+    <string name="auto_capitalize">Auto-capitalise sentences</string>
+    <string name="double_space_period">Double-space for full stop</string>
+    <string name="double_space_hint">Tap space twice to insert “. ”.</string>
+    <string name="number_row">Number row</string>
+    <string name="space_swipe_cursor">Slide spacebar to move cursor</string>
+    <string name="space_swipe_hint">Swipe left or right to move the cursor; swipe up or down to move between lines.</string>
+    <string name="key_preview">Key pop-up preview</string>
+    <string name="try_keyboard_hint">Type here to try the keyboard…</string>
+    <string name="status_not_enabled">Step 1 of 2 · Enable MeroType</string>
+    <string name="status_not_enabled_detail">Turn MeroType on in your phone’s keyboard list.</string>
+    <string name="status_not_selected">Step 2 of 2 · Switch to MeroType</string>
+    <string name="status_not_selected_detail">Pick MeroType as your active keyboard.</string>
+    <string name="status_active">MeroType is active ✓</string>
+    <string name="status_active_detail">Tap the box below to try it.</string>
+    <string name="btn_enable">Enable keyboard</string>
+    <string name="btn_switch">Switch keyboard</string>
+    <string name="btn_keyboard_settings">Keyboard settings</string>
+    <string name="learned_limit_hint">Showing your 20 most-used learned words.</string>
+    <string name="vibration_strength">Vibration strength</string>
+    <string name="test_vibration">Test vibration</string>
+    <string name="swipe_delete_word">Swipe backspace to delete words</string>
+    <string name="vibration_value">%1$d%%</string>
 </resources>
+

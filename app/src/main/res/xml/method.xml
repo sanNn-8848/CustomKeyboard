@@ -11,3 +11,5 @@
         android:isAsciiCapable="true"
         android:label="@string/subtype_nepali" />
 </input-method>
+
+

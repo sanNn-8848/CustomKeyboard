@@ -6,7 +6,14 @@ import android.inputmethodservice.InputMethodService
 import android.os.Handler
 import android.os.Looper
 import android.text.InputType
+import android.content.Intent
+import android.graphics.Typeface
+import android.view.Gravity
 import android.view.View
+import android.widget.HorizontalScrollView
+import android.widget.LinearLayout
+import android.widget.TextView
+import com.romannepali.keyboard.settings.SettingsActivity
 import android.view.inputmethod.EditorInfo
 import android.widget.Toast
 import androidx.core.view.ViewCompat
@@ -15,6 +22,7 @@ import com.romannepali.keyboard.clipboard.ClipAction
 import com.romannepali.keyboard.clipboard.ClipboardManager
 import com.romannepali.keyboard.clipboard.ClipboardPane
 import com.romannepali.keyboard.editing.TextEditor
+import com.romannepali.keyboard.editing.TypingRules
 import com.romannepali.keyboard.emoji.EmojiSearchPane
 import com.romannepali.keyboard.suggestion.AUTO_CORRECT_THRESHOLD
 import com.romannepali.keyboard.suggestion.PredictionContext
@@ -27,7 +35,10 @@ class RomanNepaliIME : InputMethodService() {
     private var keyboardView: GboardKeyboardView? = null
     private var suggestionBar: SuggestionBar? = null
     private var dragOverlay: SuggestionDragOverlay? = null
-    private var featureCarousel: FeatureCarouselView? = null
+    private var toolsToggle: TextView? = null
+    private var toolsStrip: HorizontalScrollView? = null
+    private var toolsRow: LinearLayout? = null
+    private var contentView: View? = null
     private var featurePane: android.widget.FrameLayout? = null
     private var clipboardPane: ClipboardPane? = null
     private var emojiSearchPane: EmojiSearchPane? = null
@@ -43,8 +54,20 @@ class RomanNepaliIME : InputMethodService() {
     private var deletedText: String? = null
     // Last suppressed word for the undo arrow (reversible without destroying history).
     private var lastSuppressedWord: String? = null
-    // Active feature pane index: 0=suggestions, 1=clipboard, 2=emoji.
+    // Active top-row pane: 0=suggestions, 1=clipboard, 2=emoji, 3=tools strip.
     private var currentMode = 0
+
+    // What kind of editor we are typing into (set in onStartInput).
+    //  - suggestionsAllowed: plain text fields only (not password/URL/email/number)
+    //  - learningAllowed: additionally honours the editor's "no personalized learning"
+    //    (incognito) flag. Nothing typed into a sensitive field is ever learned.
+    private var fieldInputType = 0
+    private var suggestionsAllowed = true
+    private var learningAllowed = true
+
+    // Last text we saw on the system clipboard, so re-opening the clipboard pane
+    // doesn't resurrect an item the user already deleted from history.
+    private var lastSystemClip: String? = null
 
     // Last finished words (most recent last) fed back into prediction.
     private val contextWords = mutableListOf<String>()
@@ -64,8 +87,8 @@ class RomanNepaliIME : InputMethodService() {
         clipboardManager = ClipboardManager.get(this)
 
         // Watch the system clipboard so ANY copy/cut (this keyboard's or any
-        // other app's) reaches the pane's history. Without this listener the
-        // store had no writer at all after the Actions panel was removed.
+        // other app's) reaches the pane's history. This listener is the only
+        // writer of clipboard history.
         clipListener = android.content.ClipboardManager.OnPrimaryClipChangedListener {
             // ClipboardManager can fire this off the main thread; hop over so
             // the store write + pane re-render stay ordered on the UI thread.
@@ -92,6 +115,7 @@ class RomanNepaliIME : InputMethodService() {
     private fun saveEditedClip(
         knownText: String? = null,
         attempt: Int = 0,
+        force: Boolean = true,
         onDone: (() -> Unit)? = null
     ) {
         if (!knownText.isNullOrBlank() && attempt == 0) {
@@ -99,10 +123,15 @@ class RomanNepaliIME : InputMethodService() {
         }
         val systemText = readPrimaryClipText()
         if (!systemText.isNullOrBlank()) {
-            clipboardManager.copy(systemText)
+            // A real copy event (force) always bumps the item; a mere pane-open
+            // only records text we haven't already seen.
+            if (force || systemText != lastSystemClip) {
+                clipboardManager.copy(systemText)
+            }
+            lastSystemClip = systemText
             onDone?.invoke()
         } else if (attempt < 5) {
-            mainHandler.postDelayed({ saveEditedClip(null, attempt + 1, onDone) }, 100L)
+            mainHandler.postDelayed({ saveEditedClip(null, attempt + 1, force, onDone) }, 100L)
         } else {
             onDone?.invoke()
         }
@@ -115,6 +144,10 @@ class RomanNepaliIME : InputMethodService() {
                 as? android.content.ClipboardManager ?: return null
             val clip = cm.primaryClip ?: return null
             if (clip.itemCount == 0) return null
+            // Password managers flag what they copy as sensitive: never store it.
+            val sensitive = clip.description?.extras
+                ?.getBoolean("android.content.extra.IS_SENSITIVE", false) == true
+            if (sensitive) return null
             clip.getItemAt(0).coerceToText(this).toString().takeIf { it.isNotBlank() }
         } catch (_: SecurityException) {
             // Shortcut or restricted IME — nothing we can do.
@@ -141,7 +174,8 @@ class RomanNepaliIME : InputMethodService() {
 
         keyboardView = view.findViewById(R.id.keyboard_view)
         suggestionBar = view.findViewById(R.id.suggestion_bar)
-        featureCarousel = view.findViewById(R.id.feature_carousel)
+        toolsToggle = view.findViewById(R.id.tools_toggle)
+        contentView = view.findViewById(R.id.keyboard_content)
         featurePane = view.findViewById(R.id.feature_pane)
         mainView = view
 
@@ -175,24 +209,39 @@ class RomanNepaliIME : InputMethodService() {
         featurePane?.addView(clipboardPane)
         featurePane?.addView(emojiSearchPane)
 
-        featureCarousel?.items = listOf(
-            FeatureItem("Suggestions", "\uD83D\uDCAC"),
-            FeatureItem("Clipboard", "\uD83D\uDCCB"),
-            FeatureItem("Emoji", "\uD83D\uDE00")
-        )
+        buildToolsStrip()
         applyKeyboardTheme()
 
-        // Long-pressing the comma key opens the Emoji search pane.
+        // Toggle: "›" opens the tools strip, "‹" goes back to suggestions.
+        toolsToggle?.setOnClickListener {
+            showFeatureMode(if (currentMode == 0) 3 else 0)
+        }
+
+        // Dedicated emoji key (and comma long-press) open the emoji pane.
+        keyboardView?.onEmojiKeyTapped = {
+            showFeatureMode(if (currentMode == 2) 0 else 2)
+        }
         keyboardView?.onEmojiRequested = { openEmojiSearch() }
 
+        // Slide on the spacebar to move the caret.
+        keyboardView?.onCursorMove = { steps ->
+            currentInputConnection?.let { ic ->
+                if (steps < 0) textEditor.moveCursorLeft(ic, -steps)
+                else textEditor.moveCursorRight(ic, steps)
+            }
+        }
+
+        // Drag up/down on the spacebar to move the caret between lines.
+        keyboardView?.onCursorMoveVertical = { steps ->
+            currentInputConnection?.let { ic ->
+                if (steps < 0) textEditor.moveCursorUp(ic, -steps)
+                else textEditor.moveCursorDown(ic, steps)
+            }
+        }
+
+        applyOneHand()
         // Restore the last mode (matters after rotation, e.g. emoji pane open).
         showFeatureMode(currentMode)
-        // Sync the carousel highlight to the restored mode too. The listener
-        // attaches after this line so select() can't rebuild the pane above.
-        featureCarousel?.select(currentMode)
-        featureCarousel?.onItemSelected = { index ->
-            showFeatureMode(index)
-        }
 
         // Keep the keyboard above system navigation/gesture bars in all orientations.
         ViewCompat.setOnApplyWindowInsetsListener(view) { v, insets ->
@@ -251,6 +300,14 @@ class RomanNepaliIME : InputMethodService() {
 
         keyboardView?.onKeyPressed = { text ->
             val ic = currentInputConnection
+
+            // Any key other than backspace/shift ends the "undo delete" run.
+            if (text != "⌫" && text != "⇧") deletedText = null
+
+            // Typing from the clipboard or tools strip returns to suggestions.
+            if ((currentMode == 1 || currentMode == 3) && text != "⇧") {
+                showFeatureMode(0)
+            }
 
             // While the emoji search field is the active target, free-text keys
             // drive the search filter instead of the app's text field.
@@ -313,6 +370,14 @@ class RomanNepaliIME : InputMethodService() {
                         }
                     }
 
+                    "⌫WORD" -> {
+                        // Backspace drag-left: erase the whole word before the cursor.
+                        currentWord.clear()
+                        deletedText = null
+                        textEditor.deleteWordBackward(ic)
+                        suggestionBar?.clearSuggestions()
+                    }
+
                     "⌫" -> {
                         val selected = ic.getSelectedText(0)?.toString().orEmpty()
                         if (selected.isNotEmpty()) {
@@ -322,9 +387,11 @@ class RomanNepaliIME : InputMethodService() {
                             ic.commitText("", 1)
                             suggestionBar?.clearSuggestions()
                         } else {
-                            val restored = deletedText
+                            // Consecutive backspaces build one undoable run: "hello" -> "hello".
                             val deleted = ic.getTextBeforeCursor(1, 0)?.toString() ?: ""
-                            deletedText = if (deleted == restored) restored + deleted else deleted
+                            if (deleted.isNotEmpty()) {
+                                deletedText = (deleted + deletedText.orEmpty()).take(MAX_UNDO_CHARS)
+                            }
 
                             if (currentWord.isNotEmpty()) {
                                 val actual = ic.getTextBeforeCursor(1, 0)?.toString().orEmpty()
@@ -359,10 +426,17 @@ class RomanNepaliIME : InputMethodService() {
                     }
 
                     else -> {
+                        val isLetter = text.length == 1 && text[0].isLetter()
+                        // An apostrophe inside a word ("don't") stays part of it.
+                        val isApostrophe = text == "'" && currentWord.isNotEmpty()
+                        // Digits, symbols, emoji, anything else closes the word first.
+                        if (!isLetter && !isApostrophe) finishCurrentWord()
                         ic.commitText(text, 1)
-                        if (text.length == 1 && text[0].isLetter()) {
+                        if (isLetter || isApostrophe) {
                             currentWord.append(text.lowercase())
                             updateSuggestions()
+                        } else {
+                            suggestionBar?.clearSuggestions()
                         }
                     }
                 }
@@ -397,19 +471,24 @@ class RomanNepaliIME : InputMethodService() {
             if (dark) R.drawable.bg_mountains_dark else R.drawable.bg_mountains_light
         )
         suggestionBar?.applyTheme(dark)
+        styleTools(dark)
     }
 
     /** Steps taken when the user presses space (double-space -> period, autocorrect). */
     private fun handleSpace(ic: android.view.inputmethod.InputConnection) {
-        val before = ic.getTextBeforeCursor(1, 0)?.toString() ?: ""
+        // Look at the two characters before the caret: "x " where x is a letter or
+        // digit means this is the SECOND space after a word. After "." or at the
+        // start of text it must stay a plain space (no "Hi.. ").
+        val before2 = ic.getTextBeforeCursor(2, 0)?.toString().orEmpty()
+        val isDoubleSpace = Prefs.doubleSpacePeriod(this) &&
+            suggestionsAllowed &&
+            TypingRules.isDoubleSpace(before2)
 
-        if (before == " ") {
-            // Double space -> ". ".
+        if (isDoubleSpace) {
             ic.deleteSurroundingText(1, 0)
             ic.commitText(". ", 1)
-            finishCurrentWord()
         } else {
-            finishCurrentWord(autocorrect = true)
+            finishCurrentWord(autocorrect = Prefs.autoCorrect(this) && suggestionsAllowed)
             ic.commitText(" ", 1)
         }
         suggestionBar?.clearSuggestions()
@@ -443,13 +522,16 @@ class RomanNepaliIME : InputMethodService() {
     /**
      * Closes the current word: learns it, feeds context, and (optionally)
      * autocorrects it conservatively before the terminator is inserted.
+     *
+     * [currentWord] is always lower-case (the engine's contract) while the editor
+     * holds what the user really typed ("Mero"), so every comparison with the
+     * editor is case-insensitive and the correction re-uses the typed casing.
      */
     private fun finishCurrentWord(autocorrect: Boolean = false) {
         if (currentWord.isEmpty()) return
         val ic = currentInputConnection ?: return
 
-        val raw = currentWord.toString()
-        val word = raw.lowercase()
+        val word = currentWord.toString()
 
         var committed = word
         if (autocorrect) {
@@ -457,8 +539,9 @@ class RomanNepaliIME : InputMethodService() {
             if (correction.isCorrection &&
                 correction.confidence >= AUTO_CORRECT_THRESHOLD
             ) {
-                if (deleteExpectedTextBeforeCursor(ic, raw)) {
-                    ic.commitText(correction.word, 1)
+                val typed = editorTextMatchingCurrentWord(ic)
+                if (typed != null && ic.deleteSurroundingText(typed.length, 0)) {
+                    ic.commitText(TypingRules.matchCase(correction.word, typed), 1)
                     committed = correction.word
                 } else {
                     // Editor text no longer matches our tracked word.
@@ -470,13 +553,25 @@ class RomanNepaliIME : InputMethodService() {
             }
         }
 
-        suggestionEngine.learnWord(committed)
-
-        val previousWord = contextWords.lastOrNull()
-        suggestionEngine.updateContext(previousWord, committed)
-
-        pushContext(committed)
+        if (learningAllowed) {
+            suggestionEngine.learnWord(committed)
+            suggestionEngine.updateContext(contextWords.lastOrNull(), committed)
+        }
+        if (suggestionsAllowed) pushContext(committed)
         currentWord.clear()
+    }
+
+    /**
+     * The text actually sitting before the caret that corresponds to
+     * [currentWord] (same letters, any casing), or null if the editor disagrees.
+     */
+    private fun editorTextMatchingCurrentWord(
+        ic: android.view.inputmethod.InputConnection
+    ): String? {
+        val expected = currentWord.toString()
+        if (expected.isEmpty()) return ""
+        val actual = ic.getTextBeforeCursor(expected.length, 0)?.toString() ?: return null
+        return if (actual.equals(expected, ignoreCase = true)) actual else null
     }
 
     private fun pushContext(word: String) {
@@ -487,7 +582,7 @@ class RomanNepaliIME : InputMethodService() {
         }
     }
 
-    /** True when the caret sits at the start of a fresh sentence. */
+    /** True when the caret sits at the start of a fresh sentence (prediction context). */
     private fun isSentenceStart(): Boolean {
         val ic = currentInputConnection ?: return true
         val before = ic.getTextBeforeCursor(4, 0)?.toString() ?: return true
@@ -495,6 +590,17 @@ class RomanNepaliIME : InputMethodService() {
         if (trimmed.isEmpty()) return true
         val last = trimmed.last()
         return last == '.' || last == '!' || last == '?' || last == '\n'
+    }
+
+    /**
+     * Should the shift key be auto-armed right now? Delegates to the editor
+     * ([getCursorCapsMode]) so it respects the field's own rules: no capitals in
+     * URL / password / email / search boxes, only where the app asks for them.
+     */
+    private fun wantsAutoCap(): Boolean {
+        val ic = currentInputConnection ?: return false
+        if ((fieldInputType and InputType.TYPE_MASK_CLASS) != InputType.TYPE_CLASS_TEXT) return false
+        return ic.getCursorCapsMode(fieldInputType) != 0
     }
 
     // Auto-capitalization: applied ONCE per sentence start, and only so long as
@@ -505,7 +611,8 @@ class RomanNepaliIME : InputMethodService() {
 
     private fun updateAutoShift() {
         val kb = keyboardView ?: return
-        if (isSentenceStart()) {
+        if (!Prefs.autoCapitalize(this)) return
+        if (wantsAutoCap()) {
             if (!autoShiftApplied && !userShiftOverride) {
                 kb.setShifted(true)
                 autoShiftApplied = true
@@ -514,6 +621,27 @@ class RomanNepaliIME : InputMethodService() {
             autoShiftApplied = false
             userShiftOverride = false
         }
+    }
+
+    /** Reads the field type once per input session and derives what we may do. */
+    private fun evaluateField(attribute: EditorInfo?) {
+        val type = attribute?.inputType ?: 0
+        fieldInputType = type
+        val cls = type and InputType.TYPE_MASK_CLASS
+        val variation = type and InputType.TYPE_MASK_VARIATION
+        val isText = cls == InputType.TYPE_CLASS_TEXT
+        val blockedVariation = isText && (
+            variation == InputType.TYPE_TEXT_VARIATION_PASSWORD ||
+                variation == InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD ||
+                variation == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD ||
+                variation == InputType.TYPE_TEXT_VARIATION_URI ||
+                variation == InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS ||
+                variation == InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS
+            )
+        suggestionsAllowed = isText && !blockedVariation
+        val incognito =
+            ((attribute?.imeOptions ?: 0) and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) != 0
+        learningAllowed = suggestionsAllowed && !incognito
     }
 
     private fun refreshClipboardPane() {
@@ -564,14 +692,16 @@ class RomanNepaliIME : InputMethodService() {
     }
 
     /**
-     * Activates one of the three feature modes (0=suggestions, 1=clipboard,
-     * 2=emoji) and sizes the pane so emoji gets room to search & browse.
+     * Activates a pane in the top row: 0=suggestions, 1=clipboard, 2=emoji,
+     * 3=tools strip. Emoji gets extra height so it can search & browse.
      */
     private fun showFeatureMode(index: Int) {
         currentMode = index
         suggestionBar?.visibility = if (index == 0) View.VISIBLE else View.GONE
         clipboardPane?.visibility = if (index == 1) View.VISIBLE else View.GONE
         emojiSearchPane?.visibility = if (index == 2) View.VISIBLE else View.GONE
+        toolsStrip?.visibility = if (index == 3) View.VISIBLE else View.GONE
+        toolsToggle?.text = if (index == 0) "›" else "‹"
         keyboardView?.setEmojiMode(index == 2)
         when (index) {
             1 -> {
@@ -579,7 +709,7 @@ class RomanNepaliIME : InputMethodService() {
                 // pull whatever is on the system clipboard now, then re-render
                 // once the (async) read settles. The change listener covers
                 // copies made while we were already alive.
-                saveEditedClip { refreshClipboardPane() }
+                saveEditedClip(force = false) { refreshClipboardPane() }
                 refreshClipboardPane()
             }
 
@@ -588,23 +718,168 @@ class RomanNepaliIME : InputMethodService() {
         applyFeaturePaneHeight()
     }
 
+    private fun isLandscape(): Boolean =
+        resources.configuration.orientation ==
+            android.content.res.Configuration.ORIENTATION_LANDSCAPE
+
+    private fun barHeightPx(): Int = if (isLandscape()) dp(36) else dp(44)
+
     private fun applyFeaturePaneHeight() {
-        val landscape =
-            resources.configuration.orientation ==
-                android.content.res.Configuration.ORIENTATION_LANDSCAPE
-        val target = when {
-            currentMode == 2 -> if (landscape) dp(120) else dp(150)
-            else -> if (landscape) dp(26) else dp(42)
-        }
+        val landscape = isLandscape()
+        val bar = barHeightPx()
+        val target = if (currentMode == 2) (if (landscape) dp(140) else dp(200)) else bar
         featurePane?.layoutParams = (featurePane?.layoutParams ?: return).apply {
             height = target
         }
+        toolsToggle?.layoutParams = (toolsToggle?.layoutParams ?: return).apply {
+            width = bar
+            height = bar
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Tools strip (mode 3): quick actions, like Gboard's expanded toolbar.
+    // ------------------------------------------------------------------
+
+    private fun buildToolsStrip() {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+        }
+        val scroller = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            visibility = View.GONE
+            layoutParams = android.widget.FrameLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            addView(row)
+        }
+
+        fun chip(glyph: String, label: String, action: () -> Unit) {
+            val tv = TextView(this).apply {
+                text = "$glyph  $label"
+                textSize = 13f
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                gravity = Gravity.CENTER
+                setPadding(dp(14), 0, dp(14), 0)
+                isClickable = true
+                contentDescription = label
+                setOnClickListener { action() }
+            }
+            row.addView(
+                tv,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.MATCH_PARENT
+                ).apply { setMargins(dp(3), 0, dp(3), 0) }
+            )
+        }
+
+        chip("\uD83D\uDCCB", "Clipboard") { showFeatureMode(1) }
+        chip("\uD83D\uDE00", "Emoji") { showFeatureMode(2) }
+        chip("\u2630", "Select all") { editAction(ClipAction.SELECT_ALL) }
+        chip("\u29C9", "Copy") { editAction(ClipAction.COPY) }
+        chip("\uD83D\uDCE5", "Paste") { editAction(ClipAction.PASTE) }
+        chip("\u2702", "Cut") { editAction(ClipAction.CUT) }
+        chip("\uD83E\uDD1A", "One-hand") { cycleOneHand() }
+        chip("\uD83C\uDF17", "Theme") {
+            Prefs.setDarkTheme(this, !Prefs.darkTheme(this))
+            keyboardView?.applyThemeIfChanged()
+            applyKeyboardTheme()
+        }
+        chip("\uD83C\uDFA8", "Accent") {
+            Prefs.setAccentIndex(this, (Prefs.accentIndex(this) + 1) % Prefs.ACCENTS.size)
+            keyboardView?.applyThemeIfChanged()
+            applyKeyboardTheme()
+        }
+        chip("\u2699", "Settings") {
+            startActivity(
+                Intent(this, SettingsActivity::class.java).addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP
+                )
+            )
+        }
+
+        toolsStrip = scroller
+        toolsRow = row
+        featurePane?.addView(scroller)
+    }
+
+    private fun styleTools(dark: Boolean) {
+        val text = resources.getColor(
+            if (dark) R.color.letter_text_dark else R.color.letter_text_light, null
+        )
+        val bg = if (dark) R.drawable.bg_suggestion_chip_dark else R.drawable.bg_suggestion_chip_light
+        toolsToggle?.setTextColor(Prefs.accentColor(this))
+        val row = toolsRow ?: return
+        for (i in 0 until row.childCount) {
+            (row.getChildAt(i) as? TextView)?.apply {
+                setBackgroundResource(bg)
+                setTextColor(text)
+            }
+        }
+    }
+
+    private fun editAction(action: ClipAction) {
+        val ic = currentInputConnection ?: return
+        // Same contract as the clipboard chips: close the in-progress word first.
+        if (currentWord.isNotEmpty()) finishCurrentWord()
+        when (action) {
+            ClipAction.SELECT_ALL -> textEditor.selectAll(ic)
+            ClipAction.COPY -> textEditor.copy(ic)
+            ClipAction.CUT -> textEditor.cut(ic)
+            ClipAction.PASTE -> textEditor.paste(ic)
+        }
+        suggestionBar?.clearSuggestions()
+    }
+
+    // ------------------------------------------------------------------
+    // One-handed mode: shrink the keyboard and pin it to one thumb's side.
+    // ------------------------------------------------------------------
+
+    private fun cycleOneHand() {
+        val next = when (Prefs.oneHandMode(this)) {
+            Prefs.ONE_HAND_OFF -> Prefs.ONE_HAND_RIGHT
+            Prefs.ONE_HAND_RIGHT -> Prefs.ONE_HAND_LEFT
+            else -> Prefs.ONE_HAND_OFF
+        }
+        Prefs.setOneHandMode(this, next)
+        applyOneHand()
+    }
+
+    private fun applyOneHand() {
+        val content = contentView ?: return
+        val mode = if (isLandscape()) Prefs.ONE_HAND_OFF else Prefs.oneHandMode(this)
+        val screenW = resources.displayMetrics.widthPixels
+        val lp = content.layoutParams as? android.widget.FrameLayout.LayoutParams ?: return
+        when (mode) {
+            Prefs.ONE_HAND_LEFT -> {
+                lp.width = (screenW * ONE_HAND_SCALE).toInt()
+                lp.gravity = Gravity.BOTTOM or Gravity.START
+            }
+            Prefs.ONE_HAND_RIGHT -> {
+                lp.width = (screenW * ONE_HAND_SCALE).toInt()
+                lp.gravity = Gravity.BOTTOM or Gravity.END
+            }
+            else -> {
+                lp.width = android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                lp.gravity = Gravity.BOTTOM
+            }
+        }
+        content.layoutParams = lp
+        keyboardView?.widthScale = if (mode == Prefs.ONE_HAND_OFF) 1f else ONE_HAND_SCALE
+        keyboardView?.applyThemeIfChanged()
     }
 
     /** Comma-key long press: open (or refocus) the Emoji search pane. */
     private fun openEmojiSearch() {
         if (currentMode != 2) {
-            featureCarousel?.select(2)
+            showFeatureMode(2)
             return
         }
         // Already typing in the search line: the view sent "⌫" first and
@@ -623,7 +898,8 @@ class RomanNepaliIME : InputMethodService() {
         (value * resources.displayMetrics.density + 0.5f).toInt()
 
     private fun updateSuggestions() {
-        if (!Prefs.suggestions(this)) {
+        if (!Prefs.suggestions(this) || !suggestionsAllowed) {
+            suggestionJob++
             mainHandler.post { suggestionBar?.clearSuggestions() }
             return
         }
@@ -681,41 +957,25 @@ class RomanNepaliIME : InputMethodService() {
         }
 
         if (currentWord.isNotEmpty()) {
-            val expected = currentWord.toString()
-            val actual = ic.getTextBeforeCursor(expected.length, 0)?.toString()
-
-            if (actual != expected) {
-                // currentWord may be stale. Re-sync from the editor; the safe
-                // deletion below then matches the true current text.
-                val synced = ic.getTextBeforeCursor(48, 0)?.toString().orEmpty()
-                var syncStart = synced.length
-                while (syncStart > 0) {
-                    val c = synced[syncStart - 1]
-                    if (c.isWhitespace() || c == '.' || c == ',' || c == ';') break
-                    syncStart--
-                }
-                val editorWord = synced.substring(syncStart)
-                if (editorWord.isEmpty()) {
-                    // No typed word before the cursor: nothing to replace.
-                    currentWord.clear()
-                    suggestionJob++
-                    suggestionBar?.clearSuggestions()
-                    updateUndoUi()
-                    return
-                }
+            var typed = editorTextMatchingCurrentWord(ic)
+            if (typed == null) {
+                // currentWord is stale. Re-derive it from the editor using the same
+                // word definition as onUpdateSelection, then try once more.
+                val editorWord = wordBeforeCaret(ic)
                 currentWord.setLength(0)
-                currentWord.append(editorWord)
+                currentWord.append(editorWord.lowercase())
+                typed = if (editorWord.isEmpty()) null else editorTextMatchingCurrentWord(ic)
             }
-
-            if (!deleteExpectedTextBeforeCursor(ic, currentWord.toString())) {
-                // The editor text still does not match our tracked word.
-                // Never perform a blind deletion.
+            if (typed == null || !ic.deleteSurroundingText(typed.length, 0)) {
+                // Nothing safe to replace. Never perform a blind deletion.
                 currentWord.clear()
                 suggestionJob++
                 suggestionBar?.clearSuggestions()
                 updateUndoUi()
                 return
             }
+            // Keep the user's capitalisation ("Mer" -> "Mero", not "mero").
+            if (!cycleCase && out == suggestion) out = TypingRules.matchCase(out, typed)
         }
 
         // Commit the word then a space, so the next word starts clean and the
@@ -724,11 +984,10 @@ class RomanNepaliIME : InputMethodService() {
 
         val words = suggestion.split(Regex("\\s+")).filter { it.isNotBlank() }
         words.forEach { word ->
-            val previousWord = contextWords.lastOrNull()
-
-            suggestionEngine.learnWord(word.lowercase())
-            suggestionEngine.updateContext(previousWord, word.lowercase())
-
+            if (learningAllowed) {
+                suggestionEngine.learnWord(word.lowercase())
+                suggestionEngine.updateContext(contextWords.lastOrNull(), word.lowercase())
+            }
             pushContext(word.lowercase())
         }
 
@@ -779,7 +1038,7 @@ class RomanNepaliIME : InputMethodService() {
         ic.commitText(restored, 1)
 
         if (restored.all { it.isLetter() }) {
-            currentWord.append(restored)
+            currentWord.append(restored.lowercase())
             updateSuggestions()
         } else {
             finishCurrentWord()
@@ -789,6 +1048,9 @@ class RomanNepaliIME : InputMethodService() {
         deletedText = null
         updateUndoUi()
     }
+
+    private fun wordBeforeCaret(ic: android.view.inputmethod.InputConnection): String =
+        TypingRules.wordAtEnd(ic.getTextBeforeCursor(MAX_SYNC_CHARS, 0) ?: "")
 
     private fun updateUndoUi() {
         val textAvailable = deletedText?.isNotEmpty() == true
@@ -807,6 +1069,8 @@ class RomanNepaliIME : InputMethodService() {
         // not rebuild (rotation stability: suggestion/word/shift state survive).
         // Here we only make sure the system-bar inset is re-applied afterwards.
         mainHandler.post {
+            applyOneHand()
+            applyFeaturePaneHeight()
             if (mainView != null) {
                 mainView?.requestApplyInsets()
             }
@@ -827,6 +1091,12 @@ class RomanNepaliIME : InputMethodService() {
         // synchronizes the cached word and suggestion bar against the editor's
         // real text (self-correcting). Clearing here is what made rotation look
         // like a keyboard restart ("mero nam" + suggestions vanishing).
+        evaluateField(attribute)
+        if (!restarting) {
+            // A genuinely new field: don't carry the previous app's sentence over
+            // into predictions.
+            contextWords.clear()
+        }
         deletedText = null
         lastSuppressedWord = null
         updateUndoUi()
@@ -834,10 +1104,10 @@ class RomanNepaliIME : InputMethodService() {
         userShiftOverride = false
 
         keyboardView?.onShiftToggled = { _ ->
-            if (isSentenceStart()) userShiftOverride = true
+            if (wantsAutoCap()) userShiftOverride = true
         }
         updateAutoShift()
-        keyboardView?.applyThemeIfChanged()
+        applyOneHand()
         applyKeyboardTheme()
 
         // Reflect the target editor's IME action (Search/Go/Next/Send) on the
@@ -900,9 +1170,7 @@ class RomanNepaliIME : InputMethodService() {
             ?.toString()
             ?: return
 
-        val actualWord = beforeCursor
-            .takeLastWhile { it.isLetter() || it == '\'' }
-            .lowercase()
+        val actualWord = TypingRules.wordAtEnd(beforeCursor).lowercase()
 
         // If the editor's actual word differs from our cached word, the
         // user/app changed the text or cursor outside our normal key path.
@@ -935,6 +1203,7 @@ class RomanNepaliIME : InputMethodService() {
             ?.removePrimaryClipChangedListener(clipListener)
         clipListener = null
         suggestionJob++
+        mainHandler.removeCallbacksAndMessages(null)
         suggestionExecutor.shutdownNow()
         keyboardView?.onKeyPressed = null
         keyboardView = null
@@ -947,5 +1216,12 @@ class RomanNepaliIME : InputMethodService() {
     private companion object {
         /** How many characters to read when re-deriving the word before the caret. */
         const val MAX_SYNC_CHARS = 64
+
+        /** Cap for the "undo delete" buffer. */
+        const val MAX_UNDO_CHARS = 200
+
+        /** Keyboard width fraction in one-handed mode. */
+        const val ONE_HAND_SCALE = 0.82f
     }
 }
+

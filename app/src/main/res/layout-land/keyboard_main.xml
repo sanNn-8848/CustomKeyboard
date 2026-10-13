@@ -21,32 +21,50 @@
         android:src="@drawable/bg_mountains_dark"
         android:contentDescription="@null" />
 
+    <!-- All interactive content. Narrowed + pinned to one side in one-handed mode. -->
     <LinearLayout
+        android:id="@+id/keyboard_content"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom"
         android:orientation="vertical">
 
-        <!-- Feature Carousel Strip (compact for landscape) -->
-        <com.romannepali.keyboard.FeatureCarouselView
-            android:id="@+id/feature_carousel"
+        <!-- One slim top row: [tools toggle] [suggestions | clipboard | emoji | tools].
+             Replaces the old 3D carousel strip + separate pane row, giving the
+             height back to the keys. Heights are set in code (portrait/landscape). -->
+        <LinearLayout
+            android:id="@+id/top_row"
             android:layout_width="match_parent"
-            android:layout_height="24dp"
-            android:background="@drawable/bg_prediction_bar" />
-
-        <!-- Feature Content Pane (compact for landscape) -->
-        <FrameLayout
-            android:id="@+id/feature_pane"
-            android:layout_width="match_parent"
-            android:layout_height="26dp"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
             android:background="@drawable/bg_prediction_bar">
 
-            <com.romannepali.keyboard.SuggestionBar
-                android:id="@+id/suggestion_bar"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:orientation="horizontal" />
-        </FrameLayout>
+            <TextView
+                android:id="@+id/tools_toggle"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:layout_gravity="top"
+                android:gravity="center"
+                android:text="›"
+                android:textSize="24sp"
+                android:textStyle="bold"
+                android:contentDescription="@string/tools_toggle_description"
+                android:background="@drawable/bg_tool_button"
+                android:layout_margin="0dp" />
+
+            <FrameLayout
+                android:id="@+id/feature_pane"
+                android:layout_width="0dp"
+                android:layout_height="44dp"
+                android:layout_weight="1">
+
+                <com.romannepali.keyboard.SuggestionBar
+                    android:id="@+id/suggestion_bar"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:orientation="horizontal" />
+            </FrameLayout>
+        </LinearLayout>
 
         <!-- Keyboard -->
         <com.romannepali.keyboard.GboardKeyboardView

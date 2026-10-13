@@ -10,3 +10,4 @@
         android:centerColor="@color/glow_light"
         android:endColor="@color/glow_light_edge" />
 </shape>
+

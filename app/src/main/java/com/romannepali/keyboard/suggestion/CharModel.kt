@@ -352,3 +352,4 @@ class CharModel(context: Context) {
         )
     }
 }
+

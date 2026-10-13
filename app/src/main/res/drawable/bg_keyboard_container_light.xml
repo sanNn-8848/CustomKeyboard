@@ -6,3 +6,4 @@
         android:endColor="@color/keyboard_bg_light"
         android:angle="270" />
 </shape>
+

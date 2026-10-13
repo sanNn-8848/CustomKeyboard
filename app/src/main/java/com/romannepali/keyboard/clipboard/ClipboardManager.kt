@@ -174,3 +174,4 @@ class ClipboardManager private constructor(private val context: Context) {
         loadHistory()
     }
 }
+

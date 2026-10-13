@@ -471,3 +471,4 @@ class SuggestionDragOverlay @JvmOverloads constructor(
         val FAVORITE_RGB = Color.rgb(255, 199, 71)
     }
 }
+

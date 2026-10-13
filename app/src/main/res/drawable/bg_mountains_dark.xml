@@ -8,3 +8,4 @@
         android:fillColor="@color/mountains_dark"
         android:pathData="M0,12 L4.5,5.5 L8.5,11 L13,3 L18.5,11.5 L24,5 L24,12 Z" />
 </vector>
+

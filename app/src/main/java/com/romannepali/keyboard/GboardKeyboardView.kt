@@ -8,7 +8,6 @@ import android.graphics.Typeface
 import android.media.SoundPool
 import android.util.AttributeSet
 import android.view.Gravity
-import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.animation.DecelerateInterpolator
@@ -32,6 +31,7 @@ class GboardKeyboardView @JvmOverloads constructor(
     private val DOT = "KEY_DOT"
     private val ENTER = "KEY_ENTER"
     private val COMMA = "KEY_COMMA"
+    private val EMOJI = "KEY_EMOJI"
 
     private data class KeyDef(val label: String?, val weight: Float)
 
@@ -52,7 +52,7 @@ class GboardKeyboardView @JvmOverloads constructor(
             KeyDef(BACKSPACE, 1.6f)
         ),
         listOf(
-            KeyDef(SYMBOLS, 1.6f), KeyDef(COMMA, 1f), KeyDef(SPACE, 4.6f),
+            KeyDef(SYMBOLS, 1.5f), KeyDef(COMMA, 1f), KeyDef(EMOJI, 1f), KeyDef(SPACE, 3.9f),
             KeyDef(DOT, 1f), KeyDef(ENTER, 1.6f)
         )
     )
@@ -74,7 +74,7 @@ class GboardKeyboardView @JvmOverloads constructor(
             KeyDef("\\", 1f), KeyDef("|", 1f)
         ),
         listOf(
-            KeyDef(SYMBOLS, 1.6f), KeyDef(COMMA, 1f), KeyDef(SPACE, 4.6f),
+            KeyDef(SYMBOLS, 1.5f), KeyDef(COMMA, 1f), KeyDef(EMOJI, 1f), KeyDef(SPACE, 3.9f),
             KeyDef(DOT, 1f), KeyDef(ENTER, 1.6f)
         )
     )
@@ -116,6 +116,8 @@ class GboardKeyboardView @JvmOverloads constructor(
     private val SIDE_MARGIN_DEFAULT = 6
     private val KEY_MIN = 30
     private val KEY_MAX = 55
+    // Landscape: let keys use the full width instead of floating in the middle.
+    private val KEY_MAX_LANDSCAPE = 96
     private val KEY_EDGE = 2          // slot gap math for keyboardSideMargin(); keys themselves paint a 2dp/side <inset>
     private val LETTER_ROW = 44
     private val LETTER_ROW_LANDSCAPE = 34
@@ -166,6 +168,21 @@ class GboardKeyboardView @JvmOverloads constructor(
 
     private val readySounds = mutableSetOf<Int>()
 
+    // State read/written by buildKeyboard(). Declared BEFORE init{} on purpose:
+    // Kotlin runs property initializers in source order, so anything declared
+    // after init would be reset to its default right after the first build.
+    private var commaKeyHint: Button? = null
+    private var emojiModeActive = false
+    private var shiftKey: View? = null
+    private var enterKey: View? = null
+    private var enterAction: Int = 0
+    private var emojiKey: View? = null
+    private var previewOn = true
+    private var lastLayoutSig = ""
+
+    /** Fraction of the screen width the keyboard may use (one-handed mode). */
+    var widthScale: Float = 1f
+
     init {
         orientation = VERTICAL
         gravity = Gravity.CENTER
@@ -179,9 +196,22 @@ class GboardKeyboardView @JvmOverloads constructor(
 
     /** Long-press events the IME may want to act on (e.g. the comma key). */
     var onEmojiRequested: (() -> Unit)? = null
-    private var commaKeyHint: Button? = null
-    private var emojiModeActive = false
     var onKeyLongPressed: ((String) -> Unit)? = null
+
+    /** Dedicated emoji key tapped (toggles the emoji pane). */
+    var onEmojiKeyTapped: (() -> Unit)? = null
+
+    /** Spacebar swipe: negative = left, positive = right (in cursor steps). */
+    var onCursorMove: ((Int) -> Unit)? = null
+
+    /** Spacebar vertical drag: negative = up, positive = down (in cursor steps). */
+    var onCursorMoveVertical: ((Int) -> Unit)? = null
+
+
+
+    private fun layoutSignature(): String =
+        "${Prefs.darkTheme(context)}|${Prefs.keyboardSize(context)}|" +
+            "${Prefs.numberRow(context)}|${Prefs.accentIndex(context)}|$widthScale"
 
     // ------------------------------------------------------------------
     // Sound: 3 short synthesized clicks (high / mid / low pitch).
@@ -225,11 +255,16 @@ class GboardKeyboardView @JvmOverloads constructor(
         pool.play(stream, 0.8f, 0.8f, 1, 0, 1f)
     }
 
-    // Haptics: crisp impulse for letters, longer/stronger for structural keys.
+    // Haptics routed through HapticFeedbackManager so every key type has a
+    // distinct, intensity-scaled tactile profile (letters previously never fired).
+    private val haptics by lazy { HapticFeedbackManager(context) }
+
     private fun hapticStrong(view: View) {
-        if (Prefs.vibration(context)) {
-            view.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-        }
+        haptics.performKeyHaptic(view, HapticFeedbackManager.FeedbackType.LONG_PRESS)
+    }
+
+    private fun haptic(view: View, type: HapticFeedbackManager.FeedbackType) {
+        haptics.performKeyHaptic(view, type)
     }
 
     private fun bumpRow(key: View) {
@@ -299,6 +334,9 @@ class GboardKeyboardView @JvmOverloads constructor(
         keyRows.clear()
         shiftKey = null
         enterKey = null
+        emojiKey = null
+        previewOn = Prefs.keyPreview(context)
+        lastLayoutSig = layoutSignature()
         setBackgroundColor(themeBackground())
         // Outer horizontal inset computed from the real screen width so a weight-1
         // key lands inside [KEY_MIN, KEY_MAX] dp; any slack becomes the side margin.
@@ -308,7 +346,7 @@ class GboardKeyboardView @JvmOverloads constructor(
         val rows = if (isSymbols) symbolRows else lettersRows
 
         // Always-on number row (main layout, matching the symbol page's digits).
-        if (!isSymbols) {
+        if (!isSymbols && Prefs.numberRow(context)) {
             val digitRow = LinearLayout(context).apply {
                 orientation = HORIZONTAL
                 gravity = Gravity.CENTER
@@ -376,7 +414,7 @@ class GboardKeyboardView @JvmOverloads constructor(
         // the compacted landscape carousel/suggestion strips (layout-land xml).
         val letterRowDp = if (landscape) LETTER_ROW_LANDSCAPE else LETTER_ROW
         val letterRow = dp(letterRowDp) * sizeFactor()
-        val withNumber = !isSymbols
+        val withNumber = !isSymbols && Prefs.numberRow(context)
         val totalWeight = 4f + if (withNumber) numberRowWeight() else 0f
         return (letterRow * totalWeight).toInt() + chinPx()
     }
@@ -438,7 +476,7 @@ class GboardKeyboardView @JvmOverloads constructor(
      * same scale to every row, so columns stay aligned.
      */
     private fun keyboardSideMargin(): Int {
-        val screenW = resources.displayMetrics.widthPixels
+        val screenW = (resources.displayMetrics.widthPixels * widthScale).toInt()
         val defaultMargin = dp(SIDE_MARGIN_DEFAULT)
         val slots = 10 // a letter row carries 10 weight-1 slots (spacers included)
         val edgePx = dp(KEY_EDGE) * 2
@@ -446,7 +484,7 @@ class GboardKeyboardView @JvmOverloads constructor(
         val visible = naturalSlot - edgePx
         val unit = visible.coerceIn(
             (dp(KEY_MIN) * sizeFactor()).toInt(),
-            (dp(KEY_MAX) * sizeFactor()).toInt()
+            (dp(if (isLandscape()) KEY_MAX_LANDSCAPE else KEY_MAX) * sizeFactor()).toInt()
         )
         if (unit == visible) return defaultMargin
         val wanted = (screenW - slots * (unit + edgePx)) / 2
@@ -468,7 +506,8 @@ class GboardKeyboardView @JvmOverloads constructor(
                 click = { onKeyPressed?.invoke("⌫") },
                 repeat = true,
                 strong = true,
-                sound = SOUND_DELETE
+                sound = SOUND_DELETE,
+                eraseOnDrag = true
             )
             SPACE -> addSpaceKey(row, entry.weight)
             SYMBOLS -> addActionKey(
@@ -495,8 +534,13 @@ class GboardKeyboardView @JvmOverloads constructor(
                     holdTimeoutMs = EMOJI_HOLD_TIMEOUT_MS
                 )
                 commaKeyHint = commaKey as? Button
-                styleCommaHint()
             }
+            EMOJI -> addActionKey(
+                row,
+                entry.weight,
+                iconRes = R.drawable.ic_emoji_hint,
+                click = { onEmojiKeyTapped?.invoke() }
+            ).also { emojiKey = it; styleEmojiKey() }
             DOT -> addActionKey(
                 row,
                 entry.weight,
@@ -522,7 +566,8 @@ class GboardKeyboardView @JvmOverloads constructor(
                     labelFor(text),
                     entry.weight,
                     isLetter = true,
-                    altTag = ALT_SYMBOLS[text[0]]?.toString(),
+                    altTag = ALT_SYMBOLS[text[0]]?.toString()
+                        ?.takeUnless { it[0].isDigit() && Prefs.numberRow(context) },
                     onAltPress = {
                         // The letter already committed on touch-down; replace it with
                         // the secondary character so a long-press inserts the tag.
@@ -551,11 +596,8 @@ class GboardKeyboardView @JvmOverloads constructor(
         }
     }
 
-    private var shiftKey: View? = null
 
-    private var enterKey: View? = null
 
-    private var enterAction: Int = 0
 
     private fun addKey(
         row: LinearLayout,
@@ -669,7 +711,8 @@ class GboardKeyboardView @JvmOverloads constructor(
                     key.isPressed = true
                     pressScaleOn(key)
                     playSound(SOUND_LETTER)
-                    showPopup(popup, main.text, key)
+                    haptic(key, HapticFeedbackManager.FeedbackType.KEY_LETTER)
+                    if (previewOn) showPopup(popup, main.text, key)
                     true
                 }
 
@@ -754,6 +797,7 @@ class GboardKeyboardView @JvmOverloads constructor(
         holdTimeoutMs: Long = LONG_PRESS_TIMEOUT,
         strong: Boolean = false,
         sound: Int = SOUND_LETTER,
+        eraseOnDrag: Boolean = false,
         hStart: Int = 0,
         hEnd: Int = 0
     ): View {
@@ -795,6 +839,11 @@ class GboardKeyboardView @JvmOverloads constructor(
 
         var longPressFired = false
 
+        var dragDownX = 0f
+        var dragDownY = 0f
+        var wordsDeletedByDrag = 0
+        var isDraggingLeft = false
+
         val repeatRunnable = object : Runnable {
             override fun run() {
                 if (longPressFired && repeat) {
@@ -824,6 +873,10 @@ class GboardKeyboardView @JvmOverloads constructor(
                     if (event.actionMasked == MotionEvent.ACTION_DOWN) {
                         ownerPointerId = event.getPointerId(0)
                         longPressFired = false
+                        dragDownX = event.getX(0)
+                        dragDownY = event.getY(0)
+                        wordsDeletedByDrag = 0
+                        isDraggingLeft = false
                         if ((repeat || onLongPress != null) && event.pointerCount == 1) {
                             postKeyDelayed(key, longPressRunnable, holdTimeoutMs)
                         }
@@ -833,6 +886,14 @@ class GboardKeyboardView @JvmOverloads constructor(
                     key.isPressed = true
                     pressScaleOn(key)
                     playSound(sound)
+                    haptic(
+                        key,
+                        if (sound == SOUND_DELETE) {
+                            HapticFeedbackManager.FeedbackType.KEY_DELETE
+                        } else {
+                            HapticFeedbackManager.FeedbackType.KEY_ACTION
+                        }
+                    )
                     true
                 }
 
@@ -844,11 +905,49 @@ class GboardKeyboardView @JvmOverloads constructor(
                         if (idx >= 0) {
                             val x = event.getX(idx)
                             val y = event.getY(idx)
-                            val inside =
-                                x >= 0f && y >= 0f && x < key.width && y < key.height
-                            key.isPressed = inside
-                            if (!inside) {
-                                cancelKeyRunnable(key, longPressRunnable)
+
+                            // Backspace drag-left erases whole words, one distinct
+                            // word per step as the finger travels further left.
+                            if (eraseOnDrag && Prefs.swipeDeleteWord(context)) {
+                                val deltaX = x - dragDownX
+                                val deltaY = y - dragDownY
+                                if (deltaX < -dp(10) &&
+                                    kotlin.math.abs(deltaX) > kotlin.math.abs(deltaY) * 0.7f
+                                ) {
+                                    isDraggingLeft = true
+                                    cancelKeyRunnable(key, longPressRunnable)
+                                    cancelKeyRunnable(key, repeatRunnable)
+
+                                    val maxShift = -dp(42).toFloat()
+                                    key.translationX = (deltaX * 0.45f).coerceIn(maxShift, 0f)
+
+                                    val dragDist = -deltaX
+                                    val threshold1 = dp(32).toFloat()
+                                    val stepSize = dp(38).toFloat()
+                                    val targetWords = if (dragDist >= threshold1) {
+                                        1 + ((dragDist - threshold1) / stepSize).toInt()
+                                    } else {
+                                        0
+                                    }
+                                    while (wordsDeletedByDrag < targetWords) {
+                                        wordsDeletedByDrag++
+                                        onKeyPressed?.invoke("⌫WORD")
+                                        haptic(key, HapticFeedbackManager.FeedbackType.KEY_DELETE)
+                                        playSound(sound)
+                                    }
+                                } else if (isDraggingLeft) {
+                                    val maxShift = -dp(42).toFloat()
+                                    key.translationX = (deltaX * 0.45f).coerceIn(maxShift, 0f)
+                                }
+                            }
+
+                            if (!isDraggingLeft) {
+                                val inside =
+                                    x >= 0f && y >= 0f && x < key.width && y < key.height
+                                key.isPressed = inside
+                                if (!inside) {
+                                    cancelKeyRunnable(key, longPressRunnable)
+                                }
                             }
                         }
                         true
@@ -861,6 +960,11 @@ class GboardKeyboardView @JvmOverloads constructor(
                     longPressFired = false
                     key.isPressed = false
                     pressScaleOff(key)
+                    if (isDraggingLeft) {
+                        key.animate().translationX(0f).setDuration(120).start()
+                        isDraggingLeft = false
+                        wordsDeletedByDrag = 0
+                    }
                     true
                 }
 
@@ -892,6 +996,14 @@ class GboardKeyboardView @JvmOverloads constructor(
         // language switcher and inserts nothing.
         var longPressFired = false
         var ownerPointerId = 0
+        var downX = 0f
+        var downY = 0f
+        var lastStepX = 0f
+        var lastStepY = 0f
+        var swiped = false
+        var scrolled = false
+        val swipeStart = dp(18).toFloat()
+        val swipeStep = dp(13).toFloat()
 
         val toggleKeyboardRunnable = Runnable {
             longPressFired = true
@@ -903,9 +1015,16 @@ class GboardKeyboardView @JvmOverloads constructor(
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     ownerPointerId = event.getPointerId(0)
+                    downX = event.getX(0)
+                    downY = event.getY(0)
+                    lastStepX = downX
+                    lastStepY = downY
+                    swiped = false
+                    scrolled = false
                     key.isPressed = true
                     pressScaleOn(key)
                     playSound(SOUND_SPACE)
+                    haptic(key, HapticFeedbackManager.FeedbackType.KEY_SPACE)
                     longPressFired = false
                     cancelKeyRunnable(key, toggleKeyboardRunnable)
                     postKeyDelayed(
@@ -921,6 +1040,45 @@ class GboardKeyboardView @JvmOverloads constructor(
                     if (idx >= 0) {
                         val x = event.getX(idx)
                         val y = event.getY(idx)
+                        if (!longPressFired && Prefs.spaceSwipeCursor(context)) {
+                            val dx = x - downX
+                            val dy = y - downY
+                            if (!swiped && !scrolled &&
+                                kotlin.math.abs(dx) > swipeStart &&
+                                kotlin.math.abs(dx) >= kotlin.math.abs(dy)
+                            ) {
+                                // Slide on the spacebar = move the caret (no space typed).
+                                swiped = true
+                                cancelKeyRunnable(key, toggleKeyboardRunnable)
+                                lastStepX = x
+                            } else if (!swiped && !scrolled &&
+                                kotlin.math.abs(dy) > swipeStart &&
+                                kotlin.math.abs(dy) > kotlin.math.abs(dx)
+                            ) {
+                                // Drag up/down on the spacebar = move the caret by line.
+                                scrolled = true
+                                cancelKeyRunnable(key, toggleKeyboardRunnable)
+                                lastStepY = y
+                            }
+                            if (swiped) {
+                                val steps = ((x - lastStepX) / swipeStep).toInt()
+                                if (steps != 0) {
+                                    lastStepX += steps * swipeStep
+                                    onCursorMove?.invoke(steps)
+                                    haptic(key, HapticFeedbackManager.FeedbackType.GESTURE_TICK)
+                                }
+                                return@setOnTouchListener true
+                            }
+                            if (scrolled) {
+                                val steps = ((y - lastStepY) / swipeStep).toInt()
+                                if (steps != 0) {
+                                    lastStepY += steps * swipeStep
+                                    onCursorMoveVertical?.invoke(steps)
+                                    haptic(key, HapticFeedbackManager.FeedbackType.GESTURE_TICK)
+                                }
+                                return@setOnTouchListener true
+                            }
+                        }
                         val inside =
                             x >= 0f && y >= 0f && x < key.width && y < key.height
                         key.isPressed = inside
@@ -933,9 +1091,11 @@ class GboardKeyboardView @JvmOverloads constructor(
 
                 MotionEvent.ACTION_UP -> {
                     cancelKeyRunnable(key, toggleKeyboardRunnable)
-                    if (!longPressFired) {
+                    if (!longPressFired && !swiped && !scrolled) {
                         onKeyPressed?.invoke(" ")
                     }
+                    swiped = false
+                    scrolled = false
                     key.isPressed = false
                     pressScaleOff(key)
                     true
@@ -943,6 +1103,8 @@ class GboardKeyboardView @JvmOverloads constructor(
 
                 MotionEvent.ACTION_CANCEL -> {
                     cancelKeyRunnable(key, toggleKeyboardRunnable)
+                    swiped = false
+                    scrolled = false
                     key.isPressed = false
                     pressScaleOff(key)
                     true
@@ -1093,11 +1255,11 @@ class GboardKeyboardView @JvmOverloads constructor(
     }
 
     fun applyThemeIfChanged() {
-        val preferred = Prefs.darkTheme(context)
-        val size = Prefs.keyboardSize(context)
-        if (preferred != darkTheme || size != lastAppliedSize) {
-            darkTheme = preferred
-            lastAppliedSize = size
+        val sig = layoutSignature()
+        if (sig != lastLayoutSig) {
+            darkTheme = Prefs.darkTheme(context)
+            lastAppliedSize = Prefs.keyboardSize(context)
+            lastLayoutSig = sig
             rebuild()
         }
     }
@@ -1119,25 +1281,25 @@ class GboardKeyboardView @JvmOverloads constructor(
      *  letter colour so it reads as part of the key, not as a red badge. */
     fun setEmojiMode(active: Boolean) {
         emojiModeActive = active
-        styleCommaHint()
+        styleEmojiKey()
     }
 
-    private fun styleCommaHint() {
-        val hint = commaKeyHint ?: return
-        val icon = resources.getDrawable(R.drawable.ic_emoji_hint, null)
-        icon?.setTint(letterTextColor())
-        icon?.alpha = if (emojiModeActive) 255 else 150
-        hint.setCompoundDrawablesWithIntrinsicBounds(null, null, null, icon)
-        hint.compoundDrawablePadding = dp(2)
+    private fun styleEmojiKey() {
+        val key = emojiKey ?: return
+        applyIcon(
+            key,
+            R.drawable.ic_emoji_hint,
+            if (emojiModeActive) accentColor() else iconColor()
+        )
     }
 
-    private fun accentColor(): Int = themedColor(R.color.accent)
+    private fun accentColor(): Int = Prefs.accentColor(context)
 
-    private fun spaceLabelColor(): Int =
-        if (darkTheme) themedColor(R.color.space_label_dark) else themedColor(R.color.space_label_light)
+    private fun spaceLabelColor(): Int = accentColor()
 
     private fun themedColor(resId: Int): Int = resources.getColor(resId, null)
 
     private fun dp(value: Int): Int =
         (resources.displayMetrics.density * value).toInt()
 }
+

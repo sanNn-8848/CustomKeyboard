@@ -400,3 +400,4 @@ class SuggestionBar @JvmOverloads constructor(
             resources.displayMetrics
         ).toInt()
 }
+

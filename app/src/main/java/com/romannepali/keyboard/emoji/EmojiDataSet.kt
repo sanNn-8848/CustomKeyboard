@@ -13,7 +13,10 @@ internal data class EmojiEntry(
 
 internal object EmojiDataSet {
 
-    val EMOJIS: List<EmojiEntry> = listOf(
+    /** Every emoji exactly once (first listing wins), however many times the table below repeats one. */
+    val EMOJIS: List<EmojiEntry> by lazy { RAW.distinctBy { it.emoji } }
+
+    private val RAW: List<EmojiEntry> = listOf(
         // Smileys
         e("😀", "grinning", "smileys", "happy"),
         e("😃", "smiley", "smileys", "happy"),
@@ -315,3 +318,4 @@ internal object EmojiDataSet {
         return EmojiEntry(emoji, names.filter { it.isNotEmpty() }, group)
     }
 }
+

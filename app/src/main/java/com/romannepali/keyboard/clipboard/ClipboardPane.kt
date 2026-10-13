@@ -107,7 +107,7 @@ class ClipboardPane @JvmOverloads constructor(
             actionChips[item.id] = chip
             container.addView(chip, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
-                dp(32)
+                dp(CHIP_HEIGHT_DP)
             ).apply { marginStart = dp(2); marginEnd = dp(2) })
         }
         container.addView(divider(tint))
@@ -163,7 +163,7 @@ class ClipboardPane @JvmOverloads constructor(
 
             container.addView(chip, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
-                dp(32)
+                dp(CHIP_HEIGHT_DP)
             ).apply { marginStart = dp(2); marginEnd = dp(2) })
         }
 
@@ -267,3 +267,6 @@ class ClipboardPane @JvmOverloads constructor(
         TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics
     ).toInt()
 }
+
+/** Chip height. Fits inside the 36dp landscape bar as well as the 44dp portrait one. */
+private const val CHIP_HEIGHT_DP = 30
